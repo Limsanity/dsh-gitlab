@@ -1,0 +1,84 @@
+{
+  "name": "@lim324/dsh-gitlab",
+  "description": "GitLab CI/CD surface for the DeepSeek Harness Web UI: pipeline and merge-request tabs plus per-host access tokens",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./invariant": {
+      "types": "./lib/types/invariant.d.ts",
+      "default": "./lib/invariant.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  },
+  "files": [
+    "lib"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && tsdown -c tsdown.host.ts && tsdown -c tsdown.client.ts",
+    "prepare": "pnpm run build",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-host-webserver": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-settings": ">=0.0.1-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.0.1-rc.1"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-host-webserver": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-settings": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-settings": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/cordis-plugin-include": "^1.0.6",
+    "@deepseek-ai/cordis-plugin-loader": "^1.0.2",
+    "@deepseek-ai/dsh-client-runtime": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-layout": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.0.1-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-host-webserver": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-invariants": ">=0.1.0-rc.6",
+    "@deepseek-ai/dsh-settings": ">=0.0.1-rc.1",
+    "@types/node": "^22.20.0",
+    "@types/react": "~18.3.1",
+    "react": "^18.2.0",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3",
+    "unrun": "^0.3.1",
+    "vitest": "^4.1.8"
+  }
+}

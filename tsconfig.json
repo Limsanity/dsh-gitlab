@@ -1,0 +1,65 @@
+{
+  "compilerOptions": {
+    "target": "es2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "strict": true,
+    "noImplicitAny": true,
+    "noUncheckedIndexedAccess": true,
+    "skipLibCheck": true,
+    "verbatimModuleSyntax": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "forceConsistentCasingInFileNames": true,
+    "noEmit": true,
+    "paths": {
+      // Local development: harness packages resolve from the checkout's
+      // BUILT declarations so every module augmentation in the program
+      // shares one Cordis Context. Published consumption resolves the
+      // version ranges in package.json from npm instead.
+      "@deepseek-ai/cordis": [
+        "../../github/deepseek-harness/vendor/cordis/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/schemastery": [
+        "../../github/deepseek-harness/vendor/schemastery/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/cordis-plugin-loader": [
+        "../../github/deepseek-harness/vendor/loader/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/cordis-plugin-include": [
+        "../../github/deepseek-harness/vendor/include/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-invariants": [
+        "../../github/deepseek-harness/packages/runtime-diagnostics/invariants/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-host-webserver": [
+        "../../github/deepseek-harness/packages/host/webserver/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-settings": [
+        "../../github/deepseek-harness/packages/settings/settings/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-client-ui-settings/client": [
+        "../../github/deepseek-harness/packages/client/ui-settings/lib/types/client/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-client-ui-slots": [
+        "../../github/deepseek-harness/packages/client/ui-slots/lib/types/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-client-runtime/client": [
+        "../../github/deepseek-harness/packages/client/runtime/lib/types/client/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-client-ui-layout/client": [
+        "../../github/deepseek-harness/packages/client/ui-layout/lib/types/client/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-client-ui-conversation/client": [
+        "../../github/deepseek-harness/packages/client/ui-conversation/lib/types/client/index.d.ts"
+      ],
+      "@deepseek-ai/dsh-client-ui-primitives": [
+        "../../github/deepseek-harness/packages/client/ui-primitives/lib/types/index.d.ts"
+      ]
+    }
+  },
+  "include": ["src", "tests"]
+}
