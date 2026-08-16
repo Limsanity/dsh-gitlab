@@ -54,9 +54,9 @@ Enter tokens on the **Settings → GitLab** page. The browser only ever sees whe
 
 ## How the GitLab instance is discovered
 
-1. `git remote get-url origin` is run in the workspace directory; the host and project path are parsed from it (https and ssh forms both work)
-2. the host name must contain `gitlab` for the workspace to count as a GitLab repository (v1 heuristic)
-3. the API base is `https://<host>/api/v4`; unusual deployments override it with `config.baseUrl`, and remote-less setups pin the project with `config.project`
+1. `git remote get-url origin` is run in the workspace directory; the host and project path are parsed from it (`https://…`, `git@host:path`, and `ssh://git@host:port/path` all work; the ssh port is stripped and never reaches the API base)
+2. an anonymous probe of `https://<host>/api/v4/version` decides the verdict: a 200 with a `version` field, or a 401 (the endpoint exists but demands authentication), marks the host as a GitLab instance — **the host name itself is not consulted**
+3. the API base is `https://<host>/api/v4`; unusual deployments override it with `config.baseUrl` (which also skips the probe), and remote-less setups pin the project with `config.project`
 
 ## Usage
 

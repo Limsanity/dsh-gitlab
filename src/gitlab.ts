@@ -14,20 +14,25 @@ export interface GitlabRemote {
 }
 
 /**
- * Parse a git origin URL into host and project, for the two shapes git
- * produces: `https://host/group/project.git` and `git@host:group/project.git`.
+ * Parse a git origin URL into host and project, for the three shapes git
+ * produces: `https://host/group/project.git`, `git@host:group/project.git`,
+ * and `ssh://git@host:port/group/project.git`. The host never carries the
+ * port: an ssh port is meaningless to the HTTPS API, and https remotes with
+ * explicit ports are rare enough to leave to `config.baseUrl`.
  * @param url - the raw `git remote get-url origin` output.
  * @returns the parsed remote, or undefined for non-origin shapes.
  */
 export function parseGitRemote(url: string): GitlabRemote | undefined {
-  const https = /^https?:\/\/([^/]+)\/(.+)$/.exec(url.trim())
   let host: string
   let rest: string
+  const https = /^https?:\/\/([^/]+)\/(.+)$/.exec(url.trim())
   if (https !== null) {
     host = https[1]!
     rest = https[2]!
   } else {
-    const ssh = /^git@([^:]+):(.+)$/.exec(url.trim())
+    const sshUrl = /^ssh:\/\/(?:[^@]+@)?([^/:]+)(?::\d+)?\/(.+)$/.exec(url.trim())
+    const scp = /^git@([^:]+):(.+)$/.exec(url.trim())
+    const ssh = sshUrl ?? scp
     if (ssh === null) return undefined
     host = ssh[1]!
     rest = ssh[2]!
