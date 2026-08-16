@@ -1,7 +1,7 @@
 {
   "name": "@lim324/dsh-gitlab",
   "description": "GitLab CI/CD surface for the DeepSeek Harness Web UI: pipeline and merge-request tabs plus per-host access tokens",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "publishConfig": {
     "access": "public"
   },
@@ -44,9 +44,9 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.0.1-rc.1",
     "@deepseek-ai/dsh-host-webserver": ">=0.1.0-rc.6",
-    "@deepseek-ai/dsh-settings": ">=0.0.1-rc.1",
-    "@deepseek-ai/dsh-client-ui-settings": ">=0.0.1-rc.1"
+    "@deepseek-ai/dsh-settings": ">=0.0.1-rc.1"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-host-webserver": {
