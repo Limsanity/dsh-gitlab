@@ -79,6 +79,14 @@ function fakeGitlab(): { fetchImpl: typeof fetch; seen: string[]; tokens: string
     seen.push(`${init?.method ?? 'GET'} ${url}`)
     tokens.push(String((init?.headers as Record<string, string> | undefined)?.['private-token'] ?? ''))
     const json = (body: unknown): Response => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    // Detection probe: this host answers 401 (the endpoint exists but
+    // demands authentication), proving the 401 signal counts as GitLab.
+    if (url === 'https://gitlab.com/api/v4/version') {
+      return json({ version: '17.0.0', revision: 'abc123' })
+    }
+    if (url === 'https://git-ops.internal.example/api/v4/version') {
+      return new Response('{"message":"401 Unauthorized"}', { status: 401, headers: { 'content-type': 'application/json' } })
+    }
     if (url.endsWith('/pipelines?per_page=5')) {
       return json([{ id: 7, status: 'running', ref: 'main', sha: 'abc12345', web_url: null }])
     }
@@ -184,9 +192,13 @@ function fakeSettingsPlugin(initial: Record<string, unknown> = {}): { name: stri
 }
 
 describe('parseGitRemote', () => {
-  it('parses https and ssh origin shapes and rejects garbage', () => {
+  it('parses https, scp, and ssh:// origin shapes and rejects garbage', () => {
     expect(parseGitRemote('https://gitlab.com/group/sub/proj.git')).toEqual({ host: 'gitlab.com', project: 'group/sub/proj' })
     expect(parseGitRemote('git@gitlab.example.com:group/proj.git')).toEqual({ host: 'gitlab.example.com', project: 'group/proj' })
+    // The ssh:// shape strips the ssh port: it is never the HTTPS API port.
+    expect(parseGitRemote('ssh://git@git-corp.example.com:32200/fde/webapps/act/demo-project.git'))
+      .toEqual({ host: 'git-corp.example.com', project: 'fde/webapps/act/demo-project' })
+    expect(parseGitRemote('ssh://git@host.example/group/proj')).toEqual({ host: 'host.example', project: 'group/proj' })
     expect(parseGitRemote('https://github.com/a/b.git')).toEqual({ host: 'github.com', project: 'a/b' })
     expect(parseGitRemote('not a remote')).toBeUndefined()
     expect(parseGitRemote('https://gitlab.com/../evil.git')).toBeUndefined()
@@ -582,7 +594,9 @@ describe('real Loader composition', () => {
     GitlabUi.internals.fetchImpl = fetchImpl
     GitlabUi.internals.runGit = async (dir: string) => {
       if (dir === '/ws/frontend') return 'https://gitlab.com/acme/frontend.git'
-      if (dir === '/ws/other') return 'git@gitlab.internal.example:acme/other.git'
+      // A corporate-shaped remote: ssh:// with a port and a host name that
+      // does not contain "gitlab" — detection must come from the API probe.
+      if (dir === '/ws/other') return 'ssh://git@git-ops.internal.example:32200/acme/other.git'
       return 'not a remote'
     }
     const fakeRegistry = {
@@ -641,7 +655,7 @@ describe('real Loader composition', () => {
     // The gitlab.com project carried the per-host token; the internal host
     // fell back to the default token.
     expect(tokens[seen.indexOf('POST https://gitlab.com/api/v4/projects/acme%2Ffrontend/merge_requests/3/approve')]).toBe('com-tok')
-    expect(tokens[seen.indexOf('POST https://gitlab.internal.example/api/v4/projects/acme%2Fother/merge_requests/3/approve')]).toBe('default-tok')
+    expect(tokens[seen.indexOf('POST https://git-ops.internal.example/api/v4/projects/acme%2Fother/merge_requests/3/approve')]).toBe('default-tok')
   })
 
   it('seeds the token persisted before this boot without a commit', { timeout: 60_000 }, async () => {

@@ -204,6 +204,33 @@ export function apply(ctx: Context, config: Config): void {
   const currentBranchByWorkspace = new Map<string, string | null>()
   const pollers = new Map<string, ReturnType<typeof setInterval>>()
   const ensuring = new Map<string, Promise<WorkspaceStatus | undefined>>()
+  /** One detection result per host, so workspaces sharing a host probe once. */
+  const probeByHost = new Map<string, boolean>()
+
+  /**
+   * Detect a GitLab instance by its API rather than its host name: a GET of
+   * `/api/v4/version` answering 200 with a version document, or 401 (the
+   * endpoint exists but demands authentication), proves the host serves the
+   * GitLab API; anything else does not. Network and TLS failures leave the
+   * host undetected — explicit `config.baseUrl` remains the escape hatch.
+   * @param host - the remote host to probe.
+   * @returns whether the host serves the GitLab API.
+   */
+  const probeGitlab = async (host: string): Promise<boolean> => {
+    const cached = probeByHost.get(host)
+    if (cached !== undefined) return cached
+    let result = false
+    try {
+      const impl = internals.fetchImpl ?? fetch
+      const res = await impl(`https://${host}/api/v4/version`, { signal: AbortSignal.timeout(5000) })
+      if (res.status === 401) result = true
+      else if (res.ok) result = (await res.text()).includes('"version"')
+    } catch {
+      // Failure proves nothing; the host stays undetected.
+    }
+    probeByHost.set(host, result)
+    return result
+  }
   // Registered synchronously so the pollers die with the fiber.
   ctx.effect(() => () => {
     for (const timer of pollers.values()) clearInterval(timer)
@@ -389,12 +416,13 @@ export function apply(ctx: Context, config: Config): void {
       if (!projectByWorkspace.has(source.id)) {
         let remote: GitlabRemote | undefined
         if (source.path !== '') remote = await detectRemote(source.path)
-        // The v1 host heuristic: self-managed instances conventionally carry
-        // "gitlab" in their hostname; anything else is not this plugin's job.
         if (config.project !== undefined) {
+          // An explicitly pinned project needs no detection.
           remoteByWorkspace.set(source.id, null)
           projectByWorkspace.set(source.id, config.project)
-        } else if (remote !== undefined && remote.host.includes('gitlab')) {
+        } else if (remote !== undefined && (config.baseUrl !== undefined || await probeGitlab(remote.host))) {
+          // An explicit API base is proof enough; otherwise the host must
+          // actually serve the GitLab API.
           remoteByWorkspace.set(source.id, remote)
           projectByWorkspace.set(source.id, remote.project)
         } else {

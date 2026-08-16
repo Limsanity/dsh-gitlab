@@ -52,9 +52,9 @@ dsh plugin --profile web add file:/path/to/lim324-dsh-gitlab-0.1.0.tgz
 
 ## GitLab 实例如何发现
 
-1. 对 workspace 目录执行 `git remote get-url origin`,解析出 `host` 与 `project`(支持 https / ssh 两种形态)
-2. host 名必须包含 `gitlab` 才视为 GitLab 仓库(v1 启发式)
-3. API base 为 `https://<host>/api/v4`;非常规实例用 `config.baseUrl` 覆盖;无 git remote 的场景用 `config.project` 固定项目
+1. 对 workspace 目录执行 `git remote get-url origin`,解析出 `host` 与 `project`(支持 `https://…`、`git@host:path`、`ssh://git@host:port/path` 三种形态;ssh 端口会被剥离,不会带进 API base)
+2. 向 `https://<host>/api/v4/version` 发一次匿名探测:返回 200(带 `version` 字段)或 401(端点存在但要求认证)即判定为 GitLab 实例,**不依赖 host 名**
+3. API base 为 `https://<host>/api/v4`;非常规实例用 `config.baseUrl` 覆盖(设置了 baseUrl 则跳过探测);无 git remote 的场景用 `config.project` 固定项目
 
 ## 使用
 
