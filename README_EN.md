@@ -85,10 +85,19 @@ skillCloneRoot: ~/.dsh/skills-gitlab   # optional, defaults to ~/.dsh/skills-git
 
 ### Sync behavior
 
-- on boot it clones missing repositories and `git pull`s existing ones (shallow clone, `--depth 1`);
+- on boot it clones missing repositories and `git pull`s existing ones (shallow clone, `--depth 1`), then invalidates the catalog once so a first query never observes an empty directory;
 - failures are best-effort: an unreachable repository or source never blocks boot, and the provider serves whatever is on disk;
-- the token rides only in the clone URL and is stripped from the remote immediately after clone, so it never lands in `.git/config`;
-- requires the `git` binary; the token needs `read_repository` scope.
+- the token rides in the checkout's origin URL (the same exposure class as the token already stored in `settings.yaml`; the local directory is never shared), so `pull`/`push` authenticate directly;
+- requires the `git` binary; the token needs `read_repository` (`write_repository` for write-back).
+
+### Host routes
+
+| Route | Meaning |
+|---|---|
+| `POST /gitlab/skills/pull` | manual re-sync. body `{ "sourceId": "<id>" }` pulls one source, an empty body pulls all |
+| `POST /gitlab/skills/save` | write back one checked-out skill's `SKILL.md`. body `{ "sourceId", "repo", "content", "message?" }`, then commit + push |
+
+Routes sit behind the loopback trust fence and the web login session cookie (same as `/gitlab/status` and `/gitlab/actions`).
 
 ## Tokens
 
