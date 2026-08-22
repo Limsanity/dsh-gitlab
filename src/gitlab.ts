@@ -80,6 +80,14 @@ export interface MrRow {
   webUrl: string | null
 }
 
+/** One project row in a group listing, reduced to what skill discovery needs. */
+export interface GroupProjectRow {
+  /** Project basename, e.g. `skill-foo`. */
+  name: string
+  /** Project path within its namespace, e.g. `group/subgroup/skill-foo`. */
+  pathWithNamespace: string
+}
+
 /** Client options; fetchImpl injection keeps the client testable. */
 export interface GitlabApiOptions {
   baseUrl: string
@@ -214,6 +222,15 @@ export class GitlabApi {
       `/projects/${encodeURIComponent(project)}/repository/branches?${new URLSearchParams({ per_page: String(perPage) })}`,
     )
     return data.map(item => item.name)
+  }
+
+  /** List the projects of one group, optionally including nested subgroups. */
+  async listGroupProjects(group: string, includeSubgroups = true, perPage = 100): Promise<GroupProjectRow[]> {
+    const params = new URLSearchParams({ per_page: String(perPage), include_subgroups: String(includeSubgroups), simple: 'true' })
+    const data = await this.request<Array<{ name: string; path_with_namespace: string }>>(
+      `/groups/${encodeURIComponent(group)}/projects?${params.toString()}`,
+    )
+    return data.map(item => ({ name: item.name, pathWithNamespace: item.path_with_namespace }))
   }
 
   /** Create one merge request; returns its iid and web link. */

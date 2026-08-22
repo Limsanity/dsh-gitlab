@@ -38,6 +38,56 @@ dsh plugin --profile web add file:/path/to/lim324-dsh-gitlab-0.1.0.tgz
         # tokenEnv: GITLAB_TOKEN     # credential-ref / 环境变量名(默认 GITLAB_TOKEN)
 ```
 
+## GitLab Skill 同步
+
+`dsh-gitlab` 可以把一个 GitLab group 下的仓库当作 skill 来源:**每个仓库 = 一个 skill**(`SKILL.md` 在仓库根)。启动时把 group 下的仓库 clone 到本地,并注册进 skill seam;之后 skill 的 `list()` 直接读本地,无需网络、离线可用。
+
+### 配置
+
+`skillSources` 是一个列表,每项是「一个实例上的一个 group」:
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `id` | — | 源唯一 id,也是 provider 名(`gitlab:<id>`)与本地目录名 |
+| `group` | — | GitLab group 路径,如 `my-org/skills` |
+| `baseUrl` | 全局 `baseUrl` | 该实例 API 地址;不写则用插件全局 baseUrl |
+| `tokenEnv` | 全局 `tokenEnv` | 该实例 token 凭证;不写则用全局 `GITLAB_TOKEN` |
+| `ref` | `main` | 检出分支 |
+| `rank` | `250` | 发现优先级,越小越优先 |
+| `includeSubgroups` | `true` | 是否包含嵌套子 group |
+
+```yaml
+skillSources:
+  # 同一个实例上的多个 group（baseUrl / tokenEnv 留空 = 继承全局配置）
+  - { id: core, group: my-org/core-skills, rank: 200 }
+  - { id: team, group: my-org/team-skills, rank: 250 }
+  # 另一个实例，独立 token
+  - { id: internal, group: eng/skills, baseUrl: https://gitlab.internal.example/api/v4, tokenEnv: GITLAB_INTERNAL_TOKEN }
+skillCloneRoot: ~/.dsh/skills-gitlab   # 可选，默认 ~/.dsh/skills-gitlab
+```
+
+### 本地结构与发现
+
+```
+~/.dsh/skills-gitlab/
+  core/
+    skill-a/SKILL.md    # group 里的仓库 skill-a
+    skill-b/SKILL.md
+  team/
+    skill-c/SKILL.md
+```
+
+- 每个仓库 clone 到 `<skillCloneRoot>/<id>/<仓库名>/`；
+- skill 目录字段来自 `SKILL.md` 的 frontmatter：`name` / `description` / `whenToUse` / `disable-model-invocation` / `user-invocable`；
+- skill 名来自 frontmatter `name`，可与仓库名不同；跨源同名按 `rank` 去重（同 rank 按 provider 顺序）。
+
+### 同步行为
+
+- 启动时自动 clone 缺失的仓库、`git pull` 已存在的（浅 clone，`--depth 1`）；
+- 失败 best-effort：某个仓库/源拉不到不阻塞启动，provider 读到什么算什么；
+- token 只用于 clone 时的 URL，clone 后即从 remote 剥离，不落 `.git/config`；
+- 依赖 `git` 二进制；token 需要 `read_repository` 权限。
+
 ## Token
 
 来源优先级(从高到低):

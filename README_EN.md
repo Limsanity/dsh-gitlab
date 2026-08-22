@@ -40,6 +40,56 @@ Requires platform capabilities: guard seats, the settings seam, and the Web sett
         # tokenEnv: GITLAB_TOKEN     # credential-ref / environment variable name (default GITLAB_TOKEN)
 ```
 
+## GitLab skill sync
+
+`dsh-gitlab` can treat the repositories under a GitLab group as skill sources: **one repository = one skill** (`SKILL.md` at the repository root). On boot it clones the group's repositories locally and registers them with the skill seam; skill `list()` then reads the local checkout directly, with no network round-trips and offline capability.
+
+### Configuration
+
+`skillSources` is a list, each entry being one group on one instance:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `id` | — | unique source id, also the provider name (`gitlab:<id>`) and the checkout directory name |
+| `group` | — | GitLab group path, e.g. `my-org/skills` |
+| `baseUrl` | plugin `baseUrl` | this instance's API base; omit to inherit the plugin's global `baseUrl` |
+| `tokenEnv` | plugin `tokenEnv` | this instance's token credential; omit to inherit the global `GITLAB_TOKEN` |
+| `ref` | `main` | branch to check out |
+| `rank` | `250` | discovery rank, lower wins |
+| `includeSubgroups` | `true` | whether to include nested subgroups |
+
+```yaml
+skillSources:
+  # several groups on the same instance (baseUrl / tokenEnv left empty = inherit the global config)
+  - { id: core, group: my-org/core-skills, rank: 200 }
+  - { id: team, group: my-org/team-skills, rank: 250 }
+  # another instance with its own token
+  - { id: internal, group: eng/skills, baseUrl: https://gitlab.internal.example/api/v4, tokenEnv: GITLAB_INTERNAL_TOKEN }
+skillCloneRoot: ~/.dsh/skills-gitlab   # optional, defaults to ~/.dsh/skills-gitlab
+```
+
+### Local layout and discovery
+
+```
+~/.dsh/skills-gitlab/
+  core/
+    skill-a/SKILL.md    # the skill-a repository under the group
+    skill-b/SKILL.md
+  team/
+    skill-c/SKILL.md
+```
+
+- each repository is cloned to `<skillCloneRoot>/<id>/<repo name>/`;
+- catalog fields come from the `SKILL.md` frontmatter: `name` / `description` / `whenToUse` / `disable-model-invocation` / `user-invocable`;
+- the skill name is the frontmatter `name` (it may differ from the repository name); cross-source duplicates resolve by `rank` (then provider order).
+
+### Sync behavior
+
+- on boot it clones missing repositories and `git pull`s existing ones (shallow clone, `--depth 1`);
+- failures are best-effort: an unreachable repository or source never blocks boot, and the provider serves whatever is on disk;
+- the token rides only in the clone URL and is stripped from the remote immediately after clone, so it never lands in `.git/config`;
+- requires the `git` binary; the token needs `read_repository` scope.
+
 ## Tokens
 
 Resolution order (highest first):
