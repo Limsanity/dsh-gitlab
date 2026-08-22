@@ -455,8 +455,7 @@ function GitlabTokenForm(): JSX.Element {
   }
 
   return (
-    <div style={style.root}>
-      <p style={style.header}>GitLab</p>
+    <>
       <p style={style.sub}>Access tokens the host uses for pipeline and merge-request access. Empty falls back to the plugin config or the GITLAB_TOKEN environment. The browser never reads a saved token back.</p>
       <div style={style.createBar}>
         <Input
@@ -501,7 +500,7 @@ function GitlabTokenForm(): JSX.Element {
       {unavailable ? <p style={style.error}>The settings service is not mounted in this deployment.</p> : null}
       {!unavailable && readOnly ? <p style={style.error}>The settings document is read-only here.</p> : null}
       {note !== null ? <p style={style.note}>{note}</p> : null}
-    </div>
+    </>
   )
 }
 
@@ -642,15 +641,14 @@ function GitlabSkillsPanel(): JSX.Element {
   }
 
   if (status === null && loadError !== null) {
-    return <div style={style.root}><p style={style.header}>GitLab skills</p><p style={style.error}>{loadError}</p><p style={style.sub}>Skill sync needs the host route; check that the plugin is running and reachable.</p></div>
+    return <><p style={style.error}>{loadError}</p><p style={style.sub}>Skill sync needs the host route; check that the plugin is running and reachable.</p></>
   }
   if (status === null) {
-    return <div style={style.root}><p style={style.header}>GitLab skills</p><p style={style.sub}>loading…</p></div>
+    return <p style={style.sub}>loading…</p>
   }
 
   return (
-    <div style={style.root}>
-      <p style={style.header}>GitLab skills</p>
+    <>
       <p style={style.sub}>Each repository under a configured group is one skill (a root SKILL.md). Add a source to list its remote repositories, then clone them individually, or use Sync to pull the whole group.</p>
       <div style={style.section}>Add source</div>
       <div style={style.createBar}>
@@ -696,6 +694,19 @@ function GitlabSkillsPanel(): JSX.Element {
             </div>
           ))}
       {note !== null ? <p style={style.note}>{note}</p> : null}
+    </>
+  )
+}
+
+/** The combined Settings panel section: access tokens plus skill sources. */
+function GitlabSettingsPanel(): JSX.Element {
+  return (
+    <div style={style.root}>
+      <p style={style.header}>GitLab</p>
+      <div style={style.section}>Access token</div>
+      <GitlabTokenForm />
+      <div style={style.section}>Skill sources</div>
+      <GitlabSkillsPanel />
     </div>
   )
 }
@@ -716,20 +727,11 @@ export function apply(ctx: Context): void {
   // The GitLab page inside the Settings panel: the token lives in the
   // `gitlab` settings namespace on the host and is edited through this
   // plugin's own /gitlab/settings route (the settings RPC only serves
-  // allowlisted namespaces).
+  // allowlisted namespaces). Skill sources share the same page.
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'gitlab',
     order: 30,
     label: () => 'GitLab',
-  }, GitlabTokenForm))
-
-  // The skill-sync page: list each source's repositories, sync a group, and
-  // drop local checkouts.
-  ctx.slots.inject('settings.section', () => ctx.slots.register({
-    name: 'settings.section',
-    id: 'gitlab-skills',
-    order: 31,
-    label: () => 'GitLab Skills',
-  }, GitlabSkillsPanel))
+  }, GitlabSettingsPanel))
 }
