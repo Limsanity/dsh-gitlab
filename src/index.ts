@@ -16,7 +16,7 @@
 
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
@@ -766,5 +766,92 @@ export function apply(ctx: Context, config: Config): void {
         }
       },
     }), 'dsh-gitlab: skills save route')
+
+    // List every source's repositories with their local pulled status. The
+    // available list comes from the GitLab API; the pulled flag from whether
+    // the checkout directory exists locally.
+    const skillStatus = async (): Promise<{ sources: Array<{ id: string; group: string; repos: Array<{ name: string; pulled: boolean }> }> }> => {
+      const sources = []
+      for (const source of skillSources) {
+        const checkoutRoot = join(cloneRoot, source.id)
+        const local: string[] = await readdir(checkoutRoot, { withFileTypes: true })
+          .then(entries => entries.filter(entry => entry.isDirectory()).map(entry => entry.name))
+          .catch(() => [])
+        const localSet = new Set(local)
+        const api = new GitlabApi({
+          baseUrl: source.baseUrl ?? config.baseUrl ?? 'https://gitlab.com/api/v4',
+          tokenProvider: () => sourceToken(source),
+        })
+        let repos: { name: string; pulled: boolean }[] = []
+        try {
+          repos = (await api.listGroupProjects(source.group, source.includeSubgroups ?? true))
+            .map(repo => ({ name: repo.name, pulled: localSet.has(repo.name) }))
+        } catch {
+          // API unreachable: still report the locally checked-out skills.
+          repos = local.map(name => ({ name, pulled: true }))
+        }
+        sources.push({ id: source.id, group: source.group, repos })
+      }
+      return { sources }
+    }
+
+    ctx.effect(() => ctx.webServer.register({
+      kind: 'exact',
+      path: '/gitlab/skills/status',
+      handler: async (req, res) => {
+        if (!isTrustedLocalRequest(req)) {
+          res.writeHead(403)
+          res.end('forbidden')
+          return
+        }
+        if (req.method !== 'GET') {
+          res.writeHead(405)
+          res.end()
+          return
+        }
+        try {
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify(await skillStatus()))
+        } catch (error) {
+          res.writeHead(500)
+          res.end(error instanceof Error ? error.message : 'status failed')
+        }
+      },
+    }), 'dsh-gitlab: skills status route')
+
+    // Remove only the local checkout of one skill; the remote repository is
+    // left untouched.
+    ctx.effect(() => ctx.webServer.register({
+      kind: 'exact',
+      path: '/gitlab/skills/remove',
+      handler: async (req, res) => {
+        if (!isTrustedLocalRequest(req)) {
+          res.writeHead(403)
+          res.end('forbidden')
+          return
+        }
+        if (req.method !== 'POST') {
+          res.writeHead(405)
+          res.end()
+          return
+        }
+        const body = await readJsonBody(req) as Partial<{ sourceId: unknown; repo: unknown }> | undefined
+        const source = typeof body?.sourceId === 'string' ? sourceById(body.sourceId) : undefined
+        const repo = typeof body?.repo === 'string' && body.repo !== '' ? body.repo : undefined
+        if (source === undefined || repo === undefined) {
+          res.writeHead(400)
+          res.end('sourceId and repo are required')
+          return
+        }
+        try {
+          await rm(join(cloneRoot, source.id, repo), { recursive: true, force: true })
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ ok: true }))
+        } catch (error) {
+          res.writeHead(500)
+          res.end(error instanceof Error ? error.message : 'remove failed')
+        }
+      },
+    }), 'dsh-gitlab: skills remove route')
   }
 }

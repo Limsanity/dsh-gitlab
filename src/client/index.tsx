@@ -505,6 +505,105 @@ function GitlabTokenForm(): JSX.Element {
   )
 }
 
+/** Wire view of the skills status route. */
+interface SkillStatusView {
+  sources: Array<{ id: string; group: string; repos: Array<{ name: string; pulled: boolean }> }>
+}
+
+/** Read the skills status through the plugin's own fenced route. */
+async function fetchSkillStatus(): Promise<SkillStatusView | null> {
+  try {
+    const res = await fetch('/gitlab/skills/status')
+    if (res.ok) return await res.json() as SkillStatusView
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** POST one skills-management operation; returns whether the host accepted it. */
+async function postSkills(path: string, body: unknown): Promise<boolean> {
+  try {
+    const res = await fetch(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
+/** The Settings panel's GitLab Skills page: sync a group's repositories locally, and drop local checkouts. */
+function GitlabSkillsPanel(): JSX.Element {
+  const [status, setStatus] = useState<SkillStatusView | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+
+  const load = useCallback(async (): Promise<void> => { setStatus(await fetchSkillStatus()) }, [])
+  useEffect(() => { void load() }, [load])
+
+  const sync = async (sourceId: string): Promise<void> => {
+    setBusy(`sync:${sourceId}`)
+    setNote(null)
+    if (await postSkills('/gitlab/skills/pull', { sourceId })) {
+      setNote(`synced ${sourceId}`)
+      await load()
+    } else {
+      setNote('sync failed')
+    }
+    setBusy(null)
+  }
+
+  const remove = async (sourceId: string, repo: string): Promise<void> => {
+    setBusy(`remove:${sourceId}:${repo}`)
+    setNote(null)
+    if (await postSkills('/gitlab/skills/remove', { sourceId, repo })) {
+      setNote(`removed local checkout of ${repo}`)
+      await load()
+    } else {
+      setNote('remove failed')
+    }
+    setBusy(null)
+  }
+
+  if (status === null) {
+    return <div style={style.root}><p style={style.header}>GitLab skills</p><p style={style.sub}>loading…</p></div>
+  }
+  if (status.sources.length === 0) {
+    return <div style={style.root}><p style={style.header}>GitLab skills</p><p style={style.sub}>No skill sources configured (skillSources).</p></div>
+  }
+
+  return (
+    <div style={style.root}>
+      <p style={style.header}>GitLab skills</p>
+      <p style={style.sub}>Each repository under a configured group is one skill. Sync checks the group out locally so the model can load it; remove only deletes the local checkout, never the remote repository.</p>
+      {status.sources.map(source => (
+        <div key={source.id} style={{ marginBottom: 16 }}>
+          <div style={{ ...style.mrRow, borderTop: 'none' }}>
+            <span style={{ flex: 1, fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{source.id}</span>
+            <span style={style.meta}>{source.group}</span>
+            <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => void sync(source.id)}>{busy === `sync:${source.id}` ? 'Syncing…' : 'Sync'}</Button>
+          </div>
+          {source.repos.length === 0
+            ? <p style={style.meta}>no repositories</p>
+            : source.repos.map(repo => (
+                <div key={repo.name} style={style.mrRow}>
+                  <Pill>{repo.pulled ? 'pulled' : 'remote'}</Pill>
+                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{repo.name}</span>
+                  {repo.pulled
+                    ? <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => void remove(source.id, repo.name)}>{busy === `remove:${source.id}:${repo.name}` ? 'Removing…' : 'Remove local'}</Button>
+                    : null}
+                </div>
+              ))}
+        </div>
+      ))}
+      {note !== null ? <p style={style.note}>{note}</p> : null}
+    </div>
+  )
+}
+
 /**
  * Mount the GitLab tab into the conversation view ring, beside Chat and
  * Trajectory. The tab appears whenever a session is open.
@@ -528,4 +627,13 @@ export function apply(ctx: Context): void {
     order: 30,
     label: () => 'GitLab',
   }, GitlabTokenForm))
+
+  // The skill-sync page: list each source's repositories, sync a group, and
+  // drop local checkouts.
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'gitlab-skills',
+    order: 31,
+    label: () => 'GitLab Skills',
+  }, GitlabSkillsPanel))
 }

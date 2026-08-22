@@ -92,10 +92,12 @@ skillCloneRoot: ~/.dsh/skills-gitlab   # 可选，默认 ~/.dsh/skills-gitlab
 
 | 路由 | 说明 |
 |---|---|
+| `GET /gitlab/skills/status` | 列出每个源的仓库及是否已拉取到本地 |
 | `POST /gitlab/skills/pull` | 手动重拉。body `{ "sourceId": "<id>" }` 拉单个源，空 body 拉全部 |
 | `POST /gitlab/skills/save` | 写回某个已检出 skill 的 `SKILL.md`。body `{ "sourceId", "repo", "content", "message?" }`，commit + push |
+| `POST /gitlab/skills/remove` | 只删除本地 checkout，不碰远程仓库。body `{ "sourceId", "repo" }` |
 
-路由均在 loopback trust fence 内、受 web 登录会话 cookie 保护（与 `/gitlab/status`、`/gitlab/actions` 相同）。
+路由均在 loopback trust fence 内、受 web 登录会话 cookie 保护（与 `/gitlab/status`、`/gitlab/actions` 相同）。对应的 UI 在 **Settings → GitLab Skills** 页。
 
 ## Token
 

@@ -94,10 +94,12 @@ skillCloneRoot: ~/.dsh/skills-gitlab   # optional, defaults to ~/.dsh/skills-git
 
 | Route | Meaning |
 |---|---|
+| `GET /gitlab/skills/status` | lists each source's repositories and whether each is pulled locally |
 | `POST /gitlab/skills/pull` | manual re-sync. body `{ "sourceId": "<id>" }` pulls one source, an empty body pulls all |
 | `POST /gitlab/skills/save` | write back one checked-out skill's `SKILL.md`. body `{ "sourceId", "repo", "content", "message?" }`, then commit + push |
+| `POST /gitlab/skills/remove` | deletes only the local checkout, never the remote repository. body `{ "sourceId", "repo" }` |
 
-Routes sit behind the loopback trust fence and the web login session cookie (same as `/gitlab/status` and `/gitlab/actions`).
+Routes sit behind the loopback trust fence and the web login session cookie (same as `/gitlab/status` and `/gitlab/actions`); the matching UI lives on the **Settings → GitLab Skills** page.
 
 ## Tokens
 
