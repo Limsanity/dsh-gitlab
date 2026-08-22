@@ -505,9 +505,22 @@ function GitlabTokenForm(): JSX.Element {
   )
 }
 
+/** Wire view of one skill source: the config spread plus its repositories. */
+interface SkillSourceView {
+  id: string
+  group: string
+  baseUrl?: string
+  tokenEnv?: string
+  ref?: string
+  rank?: number
+  includeSubgroups?: boolean
+  repos: Array<{ name: string; pulled: boolean }>
+}
+
 /** Wire view of the skills status route. */
 interface SkillStatusView {
-  sources: Array<{ id: string; group: string; repos: Array<{ name: string; pulled: boolean }> }>
+  sources: SkillSourceView[]
+  revision?: number
 }
 
 /** Read the skills status through the plugin's own fenced route. */
@@ -535,13 +548,20 @@ async function postSkills(path: string, body: unknown): Promise<boolean> {
   }
 }
 
-/** The Settings panel's GitLab Skills page: sync a group's repositories locally, and drop local checkouts. */
+/** The Settings panel's GitLab Skills page: configure skill sources, sync a group's repositories locally, and drop local checkouts. */
 function GitlabSkillsPanel(): JSX.Element {
   const [status, setStatus] = useState<SkillStatusView | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  const [newId, setNewId] = useState('')
+  const [newGroup, setNewGroup] = useState('')
 
-  const load = useCallback(async (): Promise<void> => { setStatus(await fetchSkillStatus()) }, [])
+  const load = useCallback(async (): Promise<void> => {
+    const fresh = await fetchSkillStatus()
+    if (fresh === null) setLoadError('cannot reach the skills status route')
+    else { setStatus(fresh); setLoadError(null) }
+  }, [])
   useEffect(() => { void load() }, [load])
 
   const sync = async (sourceId: string): Promise<void> => {
@@ -568,37 +588,100 @@ function GitlabSkillsPanel(): JSX.Element {
     setBusy(null)
   }
 
+  // Replace the whole source list through the fenced CRUD route; the host
+  // re-registers providers and syncs the added/kept sources on commit. The
+  // `repos` field rides along but the host ignores it when parsing.
+  const saveSources = async (next: SkillSourceView[]): Promise<boolean> => {
+    const res = await fetch('/gitlab/skills/sources', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sources: next, expectedRevision: status?.revision }),
+    })
+    if (res.ok) { await load(); return true }
+    return false
+  }
+
+  const addSource = async (): Promise<void> => {
+    const id = newId.trim()
+    const group = newGroup.trim()
+    if (id === '' || group === '' || status === null) return
+    setBusy('add')
+    setNote(null)
+    if (await saveSources([...status.sources, { id, group, repos: [] }])) {
+      setNote(`added source ${id}`)
+      setNewId('')
+      setNewGroup('')
+    } else {
+      setNote('add source failed')
+    }
+    setBusy(null)
+  }
+
+  const removeSource = async (id: string): Promise<void> => {
+    if (status === null) return
+    setBusy(`removeSource:${id}`)
+    setNote(null)
+    if (await saveSources(status.sources.filter(source => source.id !== id))) {
+      setNote(`removed source ${id}`)
+    } else {
+      setNote('remove source failed')
+    }
+    setBusy(null)
+  }
+
+  if (status === null && loadError !== null) {
+    return <div style={style.root}><p style={style.header}>GitLab skills</p><p style={style.error}>{loadError}</p><p style={style.sub}>Skill sync needs the host route; check that the plugin is running and reachable.</p></div>
+  }
   if (status === null) {
     return <div style={style.root}><p style={style.header}>GitLab skills</p><p style={style.sub}>loading…</p></div>
-  }
-  if (status.sources.length === 0) {
-    return <div style={style.root}><p style={style.header}>GitLab skills</p><p style={style.sub}>No skill sources configured (skillSources).</p></div>
   }
 
   return (
     <div style={style.root}>
       <p style={style.header}>GitLab skills</p>
-      <p style={style.sub}>Each repository under a configured group is one skill. Sync checks the group out locally so the model can load it; remove only deletes the local checkout, never the remote repository.</p>
-      {status.sources.map(source => (
-        <div key={source.id} style={{ marginBottom: 16 }}>
-          <div style={{ ...style.mrRow, borderTop: 'none' }}>
-            <span style={{ flex: 1, fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{source.id}</span>
-            <span style={style.meta}>{source.group}</span>
-            <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => void sync(source.id)}>{busy === `sync:${source.id}` ? 'Syncing…' : 'Sync'}</Button>
-          </div>
-          {source.repos.length === 0
-            ? <p style={style.meta}>no repositories</p>
-            : source.repos.map(repo => (
-                <div key={repo.name} style={style.mrRow}>
-                  <Pill>{repo.pulled ? 'pulled' : 'remote'}</Pill>
-                  <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{repo.name}</span>
-                  {repo.pulled
-                    ? <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => void remove(source.id, repo.name)}>{busy === `remove:${source.id}:${repo.name}` ? 'Removing…' : 'Remove local'}</Button>
-                    : null}
-                </div>
-              ))}
-        </div>
-      ))}
+      <p style={style.sub}>Each repository under a configured group is one skill (a root SKILL.md). Add a source — a GitLab group whose repositories carry that file — then sync to check it out locally for the model.</p>
+      <div style={style.section}>Add source</div>
+      <div style={style.createBar}>
+        <Input
+          style={{ flex: 1, minWidth: 120 }}
+          placeholder="source id"
+          value={newId}
+          onChange={event => setNewId(event.target.value)}
+          disabled={busy !== null}
+        />
+        <Input
+          style={{ flex: 1, minWidth: 180 }}
+          placeholder="group (org/skills)"
+          value={newGroup}
+          onChange={event => setNewGroup(event.target.value)}
+          disabled={busy !== null}
+        />
+        <Button variant="primary" size="sm" disabled={busy !== null || newId.trim() === '' || newGroup.trim() === ''} onClick={() => void addSource()}>{busy === 'add' ? 'Adding…' : 'Add'}</Button>
+      </div>
+      <div style={style.section}>Sources</div>
+      {status.sources.length === 0
+        ? <p style={style.meta}>No skill sources configured.</p>
+        : status.sources.map(source => (
+            <div key={source.id} style={{ marginBottom: 16 }}>
+              <div style={{ ...style.mrRow, borderTop: 'none' }}>
+                <span style={{ flex: 1, fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{source.id}</span>
+                <span style={style.meta}>{source.group}</span>
+                <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => void sync(source.id)}>{busy === `sync:${source.id}` ? 'Syncing…' : 'Sync'}</Button>
+                <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => void removeSource(source.id)}>{busy === `removeSource:${source.id}` ? 'Removing…' : 'Remove'}</Button>
+              </div>
+              {source.repos.length === 0
+                ? <p style={style.meta}>no repositories</p>
+                : source.repos.map(repo => (
+                    <div key={repo.name} style={style.mrRow}>
+                      <Pill>{repo.pulled ? 'pulled' : 'remote'}</Pill>
+                      <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{repo.name}</span>
+                      {repo.pulled
+                        ? <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => void remove(source.id, repo.name)}>{busy === `remove:${source.id}:${repo.name}` ? 'Removing…' : 'Remove local'}</Button>
+                        : null}
+                    </div>
+                  ))}
+            </div>
+          ))}
       {note !== null ? <p style={style.note}>{note}</p> : null}
     </div>
   )
