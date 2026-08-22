@@ -957,6 +957,7 @@ export function apply(ctx: Context, config: Config): void {
       const targets = target !== undefined ? [target] : skillSources
       try {
         await Promise.all(targets.map(source => syncSource(source)))
+        invalidateAll()
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({ ok: true }))
       } catch (error) {
@@ -999,6 +1000,7 @@ export function apply(ctx: Context, config: Config): void {
       try {
         await writeFile(join(dest, 'SKILL.md'), content)
         await gitCommitPush(dest, typeof body?.message === 'string' && body.message !== '' ? body.message : `update skill ${repo}`)
+        invalidateAll()
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({ ok: true }))
       } catch (error) {
@@ -1034,6 +1036,7 @@ export function apply(ctx: Context, config: Config): void {
       }
       try {
         await rm(join(cloneRoot, source.id, repo), { recursive: true, force: true })
+        invalidateAll()
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({ ok: true }))
       } catch (error) {

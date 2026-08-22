@@ -1,7 +1,7 @@
 {
   "name": "@lim324/dsh-gitlab",
   "description": "GitLab CI/CD surface for the DeepSeek Harness Web UI: pipeline and merge-request tabs plus per-host access tokens",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publishConfig": {
     "access": "public"
   },
