@@ -99,6 +99,16 @@ skillCloneRoot: ~/.dsh/skills-gitlab   # 可选，默认 ~/.dsh/skills-gitlab
 
 路由均在 loopback trust fence 内、受 web 登录会话 cookie 保护（与 `/gitlab/status`、`/gitlab/actions` 相同）。对应的 UI 在 **Settings → GitLab Skills** 页。
 
+### 模型工具
+
+agent 可以直接调用以下工具（与 UI 等价）：
+
+| 工具 | 说明 |
+|---|---|
+| `gitlab_skill_pull` | 同步一个源（`sourceId` 可选，缺省全部） |
+| `gitlab_skill_save` | 写回某个 skill 的 `SKILL.md` 并 commit + push（**需审批**） |
+| `gitlab_skill_remove` | 只删除本地 checkout，不碰远程仓库 |
+
 ## Token
 
 来源优先级(从高到低):

@@ -26,6 +26,7 @@ import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { SettingsConflictError } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-skill'
+import { defineTool } from '@deepseek-ai/dsh-tools'
 import { gitClone, gitCommitPush, gitPull } from './git.ts'
 import { GitlabApi, parseGitRemote, type GitlabRemote, type MrRow, type PipelineRow } from './gitlab.ts'
 import { isTrustedLocalRequest } from './fence.ts'
@@ -668,6 +669,11 @@ export function apply(ctx: Context, config: Config): void {
       }
     }
 
+    // Catalog invalidation callbacks keyed by source id, shared between the
+    // provider registrations and the model-facing tools.
+    const invalidators = new Map<string, () => void>()
+    const invalidateAll = (): void => { for (const invalidate of invalidators.values()) invalidate() }
+
     ctx.inject(['skills'], (skillsCtx) => {
       for (const source of skillSources) {
         const checkoutRoot = join(cloneRoot, source.id)
@@ -677,17 +683,114 @@ export function apply(ctx: Context, config: Config): void {
           source: 'gitlab',
           providerName: `gitlab:${source.id}`,
         }, ctx)
-        let invalidate: (() => void) | undefined
         skillsCtx.effect(() => skillsCtx.skills.registerProvider((control) => {
-          invalidate = control.invalidate
+          invalidators.set(source.id, control.invalidate)
           return provider
         }), `dsh-gitlab: skill ${source.id}`)
         // Boot sync, best-effort; invalidate the catalog once the checkout
         // settles so a first query does not observe a still-empty directory.
-        void syncSource(source).then(() => invalidate?.()).catch((error) => {
+        void syncSource(source).then(() => invalidators.get(source.id)?.()).catch((error) => {
           ctx.logger.warn(`dsh-gitlab: skill source ${source.id} sync failed: ${error instanceof Error ? error.message : String(error)}`)
         })
       }
+    })
+
+    // Model-facing tools: the agent can pull, save, and remove skills directly.
+    // `save` writes back to the remote repository, so it requests approval.
+    type ApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
+    interface ApprovalLike {
+      request(req: { agent: unknown; toolName: string; reason?: string; signal?: AbortSignal }): Promise<ApprovalOutcome>
+    }
+    const requireApproval = async (exec: { agent?: unknown; signal: AbortSignal }, toolName: string, reason: string): Promise<void> => {
+      const approval = ctx.get('approval') as ApprovalLike | undefined
+      if (approval === undefined || exec.agent === undefined) throw new Error(`${toolName} cannot be approved in this context`)
+      const outcome = await approval.request({ agent: exec.agent, toolName, reason, signal: exec.signal })
+      if (outcome !== 'allowed-once') throw new Error(`${toolName} not approved: ${outcome}`)
+    }
+
+    ctx.inject(['tools'], (toolCtx) => {
+      toolCtx.tools.register(defineTool({
+        name: 'gitlab_skill_pull',
+        description: 'Sync GitLab-backed skills into the local checkout so the skill catalog reflects the latest remote state. Omit sourceId to sync every configured source.',
+        parameters: {
+          sourceId: { type: 'string', description: 'Optional source id; omit to sync every configured source.' },
+        },
+        output: {
+          schema: {
+            type: 'object', additionalProperties: false,
+            properties: { synced: { type: 'array', items: { type: 'string' }, required: true } },
+          },
+          render: (_args, value) => [{ type: 'text', text: `Synced skill sources: ${(value.synced as string[]).join(', ')}` }],
+        },
+        async execute(args) {
+          const target = typeof args.sourceId === 'string' ? sourceById(args.sourceId) : undefined
+          const targets = target !== undefined ? [target] : skillSources
+          await Promise.all(targets.map(source => syncSource(source)))
+          invalidateAll()
+          return { synced: targets.map(source => source.id) }
+        },
+        presentCall(args) {
+          return { card: 'generic', title: 'Pull GitLab skills', kind: 'fetch', rawInput: args.sourceId ?? 'all' }
+        },
+      }))
+
+      toolCtx.tools.register(defineTool({
+        name: 'gitlab_skill_save',
+        description: 'Write one checked-out skill\'s SKILL.md back to its GitLab repository (commit + push). Requires approval.',
+        parameters: {
+          sourceId: { type: 'string', required: true, description: 'The source id.' },
+          repo: { type: 'string', required: true, description: 'The repository (skill) name.' },
+          content: { type: 'string', required: true, description: 'The full SKILL.md content to write.' },
+          message: { type: 'string', description: 'Optional commit message.' },
+        },
+        output: {
+          schema: {
+            type: 'object', additionalProperties: false,
+            properties: { repo: { type: 'string', required: true } },
+          },
+          render: (_args, value) => [{ type: 'text', text: `Saved skill ${String(value.repo)}` }],
+        },
+        async execute(args, exec) {
+          const source = sourceById(args.sourceId)
+          if (source === undefined) throw new Error(`unknown sourceId "${args.sourceId}"`)
+          const dest = join(cloneRoot, source.id, args.repo)
+          if (!existsSync(dest)) throw new Error(`skill repository "${args.repo}" is not checked out; pull it first`)
+          await requireApproval(exec, 'gitlab_skill_save', `commit SKILL.md of "${args.repo}" to ${source.group}`)
+          await writeFile(join(dest, 'SKILL.md'), args.content)
+          await gitCommitPush(dest, typeof args.message === 'string' && args.message !== '' ? args.message : `update skill ${args.repo}`)
+          invalidateAll()
+          return { repo: args.repo }
+        },
+        presentCall(args) {
+          return { card: 'generic', title: `Save skill ${args.repo}`, kind: 'edit', rawInput: args.repo }
+        },
+      }))
+
+      toolCtx.tools.register(defineTool({
+        name: 'gitlab_skill_remove',
+        description: 'Delete only the local checkout of one skill; the remote GitLab repository is left untouched.',
+        parameters: {
+          sourceId: { type: 'string', required: true, description: 'The source id.' },
+          repo: { type: 'string', required: true, description: 'The repository (skill) name.' },
+        },
+        output: {
+          schema: {
+            type: 'object', additionalProperties: false,
+            properties: { repo: { type: 'string', required: true } },
+          },
+          render: (_args, value) => [{ type: 'text', text: `Removed local checkout of ${String(value.repo)}` }],
+        },
+        async execute(args) {
+          const source = sourceById(args.sourceId)
+          if (source === undefined) throw new Error(`unknown sourceId "${args.sourceId}"`)
+          await rm(join(cloneRoot, source.id, args.repo), { recursive: true, force: true })
+          invalidateAll()
+          return { repo: args.repo }
+        },
+        presentCall(args) {
+          return { card: 'generic', title: `Remove local skill ${args.repo}`, kind: 'delete', rawInput: args.repo }
+        },
+      }))
     })
 
     // Manual re-sync of one source (or every source) — the pull endpoint the
