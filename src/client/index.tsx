@@ -588,6 +588,18 @@ function GitlabSkillsPanel(): JSX.Element {
     setBusy(null)
   }
 
+  const pullRepo = async (sourceId: string, repo: string): Promise<void> => {
+    setBusy(`pull:${sourceId}:${repo}`)
+    setNote(null)
+    if (await postSkills('/gitlab/skills/pull', { sourceId, repo })) {
+      setNote(`pulled ${repo}`)
+      await load()
+    } else {
+      setNote('pull failed')
+    }
+    setBusy(null)
+  }
+
   // Replace the whole source list through the fenced CRUD route; the host
   // re-registers providers and syncs the added/kept sources on commit. The
   // `repos` field rides along but the host ignores it when parsing.
@@ -639,7 +651,7 @@ function GitlabSkillsPanel(): JSX.Element {
   return (
     <div style={style.root}>
       <p style={style.header}>GitLab skills</p>
-      <p style={style.sub}>Each repository under a configured group is one skill (a root SKILL.md). Add a source — a GitLab group whose repositories carry that file — then sync to check it out locally for the model.</p>
+      <p style={style.sub}>Each repository under a configured group is one skill (a root SKILL.md). Add a source to list its remote repositories, then clone them individually, or use Sync to pull the whole group.</p>
       <div style={style.section}>Add source</div>
       <div style={style.createBar}>
         <Input
@@ -675,6 +687,7 @@ function GitlabSkillsPanel(): JSX.Element {
                     <div key={repo.name} style={style.mrRow}>
                       <Pill>{repo.pulled ? 'pulled' : 'remote'}</Pill>
                       <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{repo.name}</span>
+                      <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => void pullRepo(source.id, repo.name)}>{busy === `pull:${source.id}:${repo.name}` ? 'Pulling…' : (repo.pulled ? 'Pull' : 'Clone')}</Button>
                       {repo.pulled
                         ? <Button variant="ghost" size="sm" disabled={busy !== null} onClick={() => void remove(source.id, repo.name)}>{busy === `remove:${source.id}:${repo.name}` ? 'Removing…' : 'Remove local'}</Button>
                         : null}

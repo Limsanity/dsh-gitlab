@@ -276,7 +276,7 @@ export function apply(ctx: Context, config: Config): void {
   // skill providers. Declared up front so the settings watcher, registered
   // before the skill section below, can reach them without a TDZ hit.
   let skillSources: SkillSource[] = config.skillSources ?? []
-  let resyncProviders: (() => Promise<void>) | undefined
+  let resyncProviders: (() => void) | undefined
   const sourcesKey = (sources: SkillSource[]): string => JSON.stringify(
     [...sources].sort((a, b) => a.id.localeCompare(b.id)).map(source => [
       source.id, source.group, source.baseUrl ?? null, source.tokenEnv ?? null,
@@ -770,6 +770,13 @@ export function apply(ctx: Context, config: Config): void {
     },
   }), 'dsh-gitlab: skills status route')
 
+  // Clone or fast-forward pull one repository row into its checkout dir.
+  const syncRepoRow = async (checkoutRoot: string, source: SkillSource, repo: { name: string; pathWithNamespace: string }): Promise<void> => {
+    const dest = join(checkoutRoot, repo.name)
+    if (existsSync(dest)) await gitPull(dest)
+    else await gitClone(`${sourceGitHost(source)}/${repo.pathWithNamespace}.git`, sourceToken(source), dest)
+  }
+
   // Clone (or pull) every repository of one source. Best-effort per repo so
   // one unreachable repository never blocks the rest of the group.
   const syncSource = async (source: SkillSource): Promise<void> => {
@@ -781,14 +788,27 @@ export function apply(ctx: Context, config: Config): void {
     })
     const repos = await api.listGroupProjects(source.group, source.includeSubgroups ?? true)
     await mapWithConcurrency(repos, SKILL_SYNC_CONCURRENCY, async (repo) => {
-      const dest = join(checkoutRoot, repo.name)
       try {
-        if (existsSync(dest)) await gitPull(dest)
-        else await gitClone(`${sourceGitHost(source)}/${repo.pathWithNamespace}.git`, sourceToken(source), dest)
+        await syncRepoRow(checkoutRoot, source, repo)
       } catch (error) {
         ctx.logger.warn(`dsh-gitlab: skill repo ${repo.pathWithNamespace} sync failed: ${error instanceof Error ? error.message : String(error)}`)
       }
     })
+  }
+
+  // Clone or pull exactly one repository of a source, looked up by name so the
+  // Web panel can pull a single repository without a whole-group sync.
+  const syncRepo = async (source: SkillSource, repoName: string): Promise<void> => {
+    const checkoutRoot = join(cloneRoot, source.id)
+    await mkdir(checkoutRoot, { recursive: true })
+    const api = new GitlabApi({
+      baseUrl: source.baseUrl ?? config.baseUrl ?? 'https://gitlab.com/api/v4',
+      tokenProvider: () => sourceToken(source),
+    })
+    const repos = await api.listGroupProjects(source.group, source.includeSubgroups ?? true)
+    const repo = repos.find(candidate => candidate.name === repoName)
+    if (repo === undefined) throw new Error(`repository "${repoName}" is not in group ${source.group}`)
+    await syncRepoRow(checkoutRoot, source, repo)
   }
 
   // Catalog invalidation callbacks keyed by source id, shared between the
@@ -796,12 +816,13 @@ export function apply(ctx: Context, config: Config): void {
   const invalidators = new Map<string, () => void>()
   const invalidateAll = (): void => { for (const invalidate of invalidators.values()) invalidate() }
 
-  // (Re)register one local-checkout provider per current source, then sync.
-  // Runs at boot and again whenever the settings section's skillSources
-  // change, so Web-panel edits take effect without a restart.
+  // (Re)register one local-checkout provider per current source. Runs at boot
+  // and again whenever the settings section's skillSources change, so
+  // Web-panel edits take effect without a restart. Syncing is manual: the
+  // panel lists remote repositories and pulls them individually or as a group.
   ctx.inject(['skills'], (skillsCtx) => {
     const cleanups: Array<() => void> = []
-    resyncProviders = async (): Promise<void> => {
+    resyncProviders = (): void => {
       for (const cleanup of cleanups) cleanup()
       cleanups.length = 0
       invalidators.clear()
@@ -818,14 +839,9 @@ export function apply(ctx: Context, config: Config): void {
           return provider
         }))
       }
-      // Sync every source so a newly added source is cloned before the next
-      // catalog query; best-effort, invalidate once it settles.
-      await Promise.all(skillSources.map(source => syncSource(source).catch((error) => {
-        ctx.logger.warn(`dsh-gitlab: skill source ${source.id} sync failed: ${error instanceof Error ? error.message : String(error)}`)
-      })))
       invalidateAll()
     }
-    void resyncProviders()
+    resyncProviders()
     // Dispose every provider registration when the skills context dies.
     skillsCtx.effect(() => () => {
       for (const cleanup of cleanups) cleanup()
@@ -947,16 +963,24 @@ export function apply(ctx: Context, config: Config): void {
         res.end()
         return
       }
-      const body = await readJsonBody(req) as Partial<{ sourceId: unknown }> | undefined
+      const body = await readJsonBody(req) as Partial<{ sourceId: unknown; repo: unknown }> | undefined
       const target = typeof body?.sourceId === 'string' ? sourceById(body.sourceId) : undefined
       if (body?.sourceId !== undefined && target === undefined) {
         res.writeHead(404)
         res.end('unknown sourceId')
         return
       }
-      const targets = target !== undefined ? [target] : skillSources
+      const repo = typeof body?.repo === 'string' && body.repo !== '' ? body.repo : undefined
       try {
-        await Promise.all(targets.map(source => syncSource(source)))
+        if (repo !== undefined) {
+          // Single-repository sync: the panel's per-repo pull.
+          if (target === undefined) throw new Error('repo requires a sourceId')
+          await syncRepo(target, repo)
+        } else {
+          // Whole-source (or all-source) sync.
+          const targets = target !== undefined ? [target] : skillSources
+          await Promise.all(targets.map(source => syncSource(source)))
+        }
         invalidateAll()
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
         res.end(JSON.stringify({ ok: true }))
