@@ -27,7 +27,7 @@ import type {} from '@deepseek-ai/dsh-host-webserver'
 import { SettingsConflictError } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-skill'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { gitClone, gitCommitPush, gitPull } from './git.ts'
+import { gitClone, gitCommitPush, gitPull, refreshOriginToken } from './git.ts'
 import { GitlabApi, parseGitRemote, type GitlabRemote, type MrRow, type PipelineRow } from './gitlab.ts'
 import { isTrustedLocalRequest } from './fence.ts'
 import { createLocalSkillProvider } from './skill.ts'
@@ -773,8 +773,14 @@ export function apply(ctx: Context, config: Config): void {
   // Clone or fast-forward pull one repository row into its checkout dir.
   const syncRepoRow = async (checkoutRoot: string, source: SkillSource, repo: { name: string; pathWithNamespace: string }): Promise<void> => {
     const dest = join(checkoutRoot, repo.name)
-    if (existsSync(dest)) await gitPull(dest)
-    else await gitClone(`${sourceGitHost(source)}/${repo.pathWithNamespace}.git`, sourceToken(source), dest)
+    if (existsSync(dest)) {
+      // Re-point the origin to the current token before pulling, so a token
+      // rotation takes effect on an existing checkout without a re-clone.
+      await refreshOriginToken(dest, sourceToken(source))
+      await gitPull(dest)
+    } else {
+      await gitClone(`${sourceGitHost(source)}/${repo.pathWithNamespace}.git`, sourceToken(source), dest)
+    }
   }
 
   // Clone (or pull) every repository of one source. Best-effort per repo so
@@ -911,6 +917,7 @@ export function apply(ctx: Context, config: Config): void {
         if (!existsSync(dest)) throw new Error(`skill repository "${args.repo}" is not checked out; pull it first`)
         await requireApproval(exec, 'gitlab_skill_save', `commit SKILL.md of "${args.repo}" to ${source.group}`)
         await writeFile(join(dest, 'SKILL.md'), args.content)
+        await refreshOriginToken(dest, sourceToken(source))
         await gitCommitPush(dest, typeof args.message === 'string' && args.message !== '' ? args.message : `update skill ${args.repo}`)
         invalidateAll()
         return { repo: args.repo }
@@ -1023,6 +1030,7 @@ export function apply(ctx: Context, config: Config): void {
       }
       try {
         await writeFile(join(dest, 'SKILL.md'), content)
+        await refreshOriginToken(dest, sourceToken(source))
         await gitCommitPush(dest, typeof body?.message === 'string' && body.message !== '' ? body.message : `update skill ${repo}`)
         invalidateAll()
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })

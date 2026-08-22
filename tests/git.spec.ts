@@ -4,7 +4,7 @@
  */
 
 import { afterEach, describe, expect, it } from 'vitest'
-import { gitClone, gitCommitPush, gitPull, internals } from '../src/git.ts'
+import { gitClone, gitCommitPush, gitPull, internals, refreshOriginToken } from '../src/git.ts'
 
 afterEach(() => {
   internals.runGit = undefined
@@ -60,5 +60,37 @@ describe('git helpers', () => {
     const calls = capture()
     await gitClone('https://gitlab.com/group/repo.git', undefined, '/tmp/dest')
     expect(calls[0]?.env.GIT_TERMINAL_PROMPT).toBe('0')
+  })
+
+  it('re-points the origin when the stored token differs', async () => {
+    const calls: string[][] = []
+    internals.runGit = async (args) => {
+      calls.push(args)
+      if (args[2] === 'remote') return 'https://oauth2:old@gitlab.com/group/repo.git'
+      return ''
+    }
+    await refreshOriginToken('/tmp/dest', 'new')
+    expect(calls).toEqual([
+      ['-C', '/tmp/dest', 'remote', 'get-url', 'origin'],
+      ['-C', '/tmp/dest', 'remote', 'set-url', 'origin', 'https://oauth2:new@gitlab.com/group/repo.git'],
+    ])
+  })
+
+  it('leaves the origin unchanged when the token already matches', async () => {
+    const calls: string[][] = []
+    internals.runGit = async (args) => {
+      calls.push(args)
+      if (args[2] === 'remote') return 'https://oauth2:new@gitlab.com/group/repo.git'
+      return ''
+    }
+    await refreshOriginToken('/tmp/dest', 'new')
+    expect(calls).toEqual([['-C', '/tmp/dest', 'remote', 'get-url', 'origin']])
+  })
+
+  it('does nothing when no token is provided', async () => {
+    const calls: string[][] = []
+    internals.runGit = async (args) => { calls.push(args); return '' }
+    await refreshOriginToken('/tmp/dest', undefined)
+    expect(calls).toEqual([])
   })
 })
