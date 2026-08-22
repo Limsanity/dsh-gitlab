@@ -67,3 +67,34 @@ export async function gitCommitPush(dest: string, message: string): Promise<void
   await runGit(['-C', dest, 'commit', '-m', message])
   await runGit(['-C', dest, 'push', 'HEAD'])
 }
+
+/** Read a checkout's origin URL (trimmed); throws when there is no origin. */
+export async function gitGetRemoteUrl(dest: string): Promise<string> {
+  return (await runGit(['-C', dest, 'remote', 'get-url', 'origin'])).trim()
+}
+
+/** Point a checkout's origin at `url`. */
+export async function gitSetRemoteUrl(dest: string, url: string): Promise<void> {
+  await runGit(['-C', dest, 'remote', 'set-url', 'origin', url])
+}
+
+/**
+ * Re-embed `token` into a checkout's origin URL when the stored token differs,
+ * so a token rotation takes effect on existing checkouts without a re-clone.
+ * No-op when the token is unset, the checkout has no origin, or the token is
+ * unchanged.
+ * @param dest - the checkout directory.
+ * @param token - the current GitLab token.
+ */
+export async function refreshOriginToken(dest: string, token: string | undefined): Promise<void> {
+  if (token === undefined || token === '') return
+  let current: string
+  try {
+    current = await gitGetRemoteUrl(dest)
+  } catch {
+    return
+  }
+  if (current === '') return
+  const desired = authedUrl(current, token)
+  if (desired !== current) await gitSetRemoteUrl(dest, desired)
+}
