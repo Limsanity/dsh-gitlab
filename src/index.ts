@@ -15,15 +15,21 @@
  */
 
 import { execFile } from 'node:child_process'
-import { basename } from 'node:path'
+import { existsSync } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { SettingsConflictError } from '@deepseek-ai/dsh-settings'
+import type {} from '@deepseek-ai/dsh-skill'
+import { gitClone, gitPull } from './git.ts'
 import { GitlabApi, parseGitRemote, type GitlabRemote, type MrRow, type PipelineRow } from './gitlab.ts'
 import { isTrustedLocalRequest } from './fence.ts'
+import { createLocalSkillProvider } from './skill.ts'
 import { GITLAB_SETTINGS_NAMESPACE, GitlabSettingsSchema, type GitlabSettings } from './settings.ts'
 
 export { GITLAB_SETTINGS_NAMESPACE, GitlabSettingsSchema, type GitlabSettings } from './settings.ts'
@@ -52,6 +58,31 @@ export interface Config {
    * fallback. `token` overrides both.
    */
   tokenEnv?: string
+  /** GitLab skill sources, each a group whose repositories are individual skills. */
+  skillSources?: SkillSource[]
+  /** Local checkout root; each source clones its repositories under `<skillCloneRoot>/<id>/`. */
+  skillCloneRoot?: string
+}
+
+/**
+ * One GitLab skill source: a group on one GitLab instance. Every repository
+ * under the group is one skill (its `SKILL.md` lives at the repository root).
+ */
+export interface SkillSource {
+  /** Unique source id, also the provider name and the checkout directory name. */
+  id: string
+  /** GitLab group path, e.g. `my-org/skills`. */
+  group: string
+  /** Instance API base URL; defaults to the plugin `baseUrl`. */
+  baseUrl?: string
+  /** Credential reference for this instance's token; defaults to the plugin `tokenEnv`. */
+  tokenEnv?: string
+  /** Branch or tag to check out. */
+  ref?: string
+  /** Discovery rank for this source; lower ranks win duplicate skill names. */
+  rank?: number
+  /** Whether to include repositories from nested subgroups. */
+  includeSubgroups?: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -61,6 +92,16 @@ export const Config: z<Config> = z.object({
   baseUrl: z.string(),
   pollMs: z.natural().min(5000).default(30_000),
   tokenEnv: z.string().role('credential-ref').default('GITLAB_TOKEN'),
+  skillSources: z.array(z.object({
+    id: z.string(),
+    group: z.string(),
+    baseUrl: z.string(),
+    tokenEnv: z.string().role('credential-ref'),
+    ref: z.string().default('main'),
+    rank: z.natural().default(250),
+    includeSubgroups: z.boolean().default(true),
+  })).default([]),
+  skillCloneRoot: z.string(),
 })
 
 /** Upper bound for one action request body. */
@@ -580,4 +621,67 @@ export function apply(ctx: Context, config: Config): void {
       res.end()
     },
   }), 'dsh-gitlab: settings route')
+
+  // Register one local-checkout skill provider per configured source, cloning
+  // (or pulling) each source under the shared checkout root first. `ctx.inject`
+  // waits for the optional skill seam, so a deployment without skills leaves
+  // the web surface untouched.
+  const skillSources = config.skillSources ?? []
+  if (skillSources.length > 0) {
+    const cloneRoot = config.skillCloneRoot ?? join(homedir(), '.dsh', 'skills-gitlab')
+
+    // Per-source instance facts: each source may live on a different GitLab
+    // host with its own token credential.
+    const sourceGitHost = (source: SkillSource): string =>
+      (source.baseUrl ?? config.baseUrl ?? 'https://gitlab.com/api/v4').replace(/\/api\/v4\/?$/, '')
+    const sourceHostName = (source: SkillSource): string =>
+      sourceGitHost(source).replace(/^https?:\/\//, '').replace(/\/.*$/, '')
+    const sourceToken = (source: SkillSource): string | undefined => {
+      const host = sourceHostName(source)
+      const tokenEnv = source.tokenEnv ?? config.tokenEnv ?? 'GITLAB_TOKEN'
+      return settingsSection?.hostTokens?.[host]
+        ?? settingsSection?.token
+        ?? config.token
+        ?? credentials?.resolve(tokenEnv)?.value
+        ?? process.env[tokenEnv]
+    }
+
+    ctx.inject(['skills'], (skillsCtx) => {
+      for (const source of skillSources) {
+        const checkoutRoot = join(cloneRoot, source.id)
+        const provider = createLocalSkillProvider({
+          localRoot: checkoutRoot,
+          rank: source.rank ?? 250,
+          source: 'gitlab',
+          providerName: `gitlab:${source.id}`,
+        }, ctx)
+        skillsCtx.effect(() => skillsCtx.skills.registerProvider(() => provider), `dsh-gitlab: skill ${source.id}`)
+        // Sync on boot, best-effort: list the group's repositories, clone each
+        // (one skill per repository), and fast-forward existing checkouts. A
+        // source that cannot be reached leaves the provider with whatever is
+        // already on disk (or nothing), never blocks boot.
+        void (async () => {
+          try {
+            await mkdir(checkoutRoot, { recursive: true })
+            const api = new GitlabApi({
+              baseUrl: source.baseUrl ?? config.baseUrl ?? 'https://gitlab.com/api/v4',
+              tokenProvider: () => sourceToken(source),
+            })
+            const repos = await api.listGroupProjects(source.group, source.includeSubgroups ?? true)
+            for (const repo of repos) {
+              const dest = join(checkoutRoot, repo.name)
+              try {
+                if (existsSync(dest)) await gitPull(dest)
+                else await gitClone(`${sourceGitHost(source)}/${repo.pathWithNamespace}.git`, sourceToken(source), dest)
+              } catch (error) {
+                ctx.logger.warn(`dsh-gitlab: skill repo ${repo.pathWithNamespace} sync failed: ${error instanceof Error ? error.message : String(error)}`)
+              }
+            }
+          } catch (error) {
+            ctx.logger.warn(`dsh-gitlab: skill source ${source.id} sync failed: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        })()
+      }
+    })
+  }
 }
