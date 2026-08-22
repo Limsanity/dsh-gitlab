@@ -15,11 +15,20 @@ import { promisify } from 'node:util'
 const execFileAsync = promisify(execFile)
 
 /** Test hook: tests substitute a fake git runner; production never touches this. */
-export const internals: { runGit?: (args: string[]) => Promise<string> } = {}
+export const internals: { runGit?: (args: string[], opts: { env: NodeJS.ProcessEnv; stdio: [string, string, string] }) => Promise<string> } = {}
+
+/** Process env + spawn options that make git fail fast instead of prompting. */
+const gitRunOptions = {
+  // GIT_TERMINAL_PROMPT=0 turns the interactive username/password prompt into
+  // an immediate error, and stdin=/dev/null stops any residual prompt from
+  // blocking on a pipe the parent never writes.
+  env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  stdio: ['ignore', 'pipe', 'pipe'] as [string, string, string],
+}
 
 async function runGit(args: string[]): Promise<string> {
-  if (internals.runGit !== undefined) return await internals.runGit(args)
-  const { stdout } = await execFileAsync('git', args)
+  if (internals.runGit !== undefined) return await internals.runGit(args, gitRunOptions)
+  const { stdout } = await execFileAsync('git', args, gitRunOptions)
   return stdout
 }
 
