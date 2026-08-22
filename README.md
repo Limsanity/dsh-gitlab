@@ -83,10 +83,19 @@ skillCloneRoot: ~/.dsh/skills-gitlab   # 可选，默认 ~/.dsh/skills-gitlab
 
 ### 同步行为
 
-- 启动时自动 clone 缺失的仓库、`git pull` 已存在的（浅 clone，`--depth 1`）；
+- 启动时自动 clone 缺失的仓库、`git pull` 已存在的（浅 clone，`--depth 1`）；同步完成后失效一次目录，避免首次查询看到空目录；
 - 失败 best-effort：某个仓库/源拉不到不阻塞启动，provider 读到什么算什么；
-- token 只用于 clone 时的 URL，clone 后即从 remote 剥离，不落 `.git/config`；
-- 依赖 `git` 二进制；token 需要 `read_repository` 权限。
+- token 内嵌在 checkout 的 origin URL 里（与 `settings.yaml` 里的 token 同级暴露，本地目录不外发），`pull`/`push` 直接可用；
+- 依赖 `git` 二进制；token 需要 `read_repository`（写回需 `write_repository`）权限。
+
+### Host 路由
+
+| 路由 | 说明 |
+|---|---|
+| `POST /gitlab/skills/pull` | 手动重拉。body `{ "sourceId": "<id>" }` 拉单个源，空 body 拉全部 |
+| `POST /gitlab/skills/save` | 写回某个已检出 skill 的 `SKILL.md`。body `{ "sourceId", "repo", "content", "message?" }`，commit + push |
+
+路由均在 loopback trust fence 内、受 web 登录会话 cookie 保护（与 `/gitlab/status`、`/gitlab/actions` 相同）。
 
 ## Token
 

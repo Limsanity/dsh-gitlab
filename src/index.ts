@@ -16,7 +16,7 @@
 
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
@@ -26,7 +26,7 @@ import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { SettingsConflictError } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-skill'
-import { gitClone, gitPull } from './git.ts'
+import { gitClone, gitCommitPush, gitPull } from './git.ts'
 import { GitlabApi, parseGitRemote, type GitlabRemote, type MrRow, type PipelineRow } from './gitlab.ts'
 import { isTrustedLocalRequest } from './fence.ts'
 import { createLocalSkillProvider } from './skill.ts'
@@ -645,6 +645,28 @@ export function apply(ctx: Context, config: Config): void {
         ?? credentials?.resolve(tokenEnv)?.value
         ?? process.env[tokenEnv]
     }
+    const sourceById = (id: string): SkillSource | undefined => skillSources.find(source => source.id === id)
+
+    // Clone (or pull) every repository of one source. Best-effort per repo so
+    // one unreachable repository never blocks the rest of the group.
+    const syncSource = async (source: SkillSource): Promise<void> => {
+      const checkoutRoot = join(cloneRoot, source.id)
+      await mkdir(checkoutRoot, { recursive: true })
+      const api = new GitlabApi({
+        baseUrl: source.baseUrl ?? config.baseUrl ?? 'https://gitlab.com/api/v4',
+        tokenProvider: () => sourceToken(source),
+      })
+      const repos = await api.listGroupProjects(source.group, source.includeSubgroups ?? true)
+      for (const repo of repos) {
+        const dest = join(checkoutRoot, repo.name)
+        try {
+          if (existsSync(dest)) await gitPull(dest)
+          else await gitClone(`${sourceGitHost(source)}/${repo.pathWithNamespace}.git`, sourceToken(source), dest)
+        } catch (error) {
+          ctx.logger.warn(`dsh-gitlab: skill repo ${repo.pathWithNamespace} sync failed: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+    }
 
     ctx.inject(['skills'], (skillsCtx) => {
       for (const source of skillSources) {
@@ -655,33 +677,94 @@ export function apply(ctx: Context, config: Config): void {
           source: 'gitlab',
           providerName: `gitlab:${source.id}`,
         }, ctx)
-        skillsCtx.effect(() => skillsCtx.skills.registerProvider(() => provider), `dsh-gitlab: skill ${source.id}`)
-        // Sync on boot, best-effort: list the group's repositories, clone each
-        // (one skill per repository), and fast-forward existing checkouts. A
-        // source that cannot be reached leaves the provider with whatever is
-        // already on disk (or nothing), never blocks boot.
-        void (async () => {
-          try {
-            await mkdir(checkoutRoot, { recursive: true })
-            const api = new GitlabApi({
-              baseUrl: source.baseUrl ?? config.baseUrl ?? 'https://gitlab.com/api/v4',
-              tokenProvider: () => sourceToken(source),
-            })
-            const repos = await api.listGroupProjects(source.group, source.includeSubgroups ?? true)
-            for (const repo of repos) {
-              const dest = join(checkoutRoot, repo.name)
-              try {
-                if (existsSync(dest)) await gitPull(dest)
-                else await gitClone(`${sourceGitHost(source)}/${repo.pathWithNamespace}.git`, sourceToken(source), dest)
-              } catch (error) {
-                ctx.logger.warn(`dsh-gitlab: skill repo ${repo.pathWithNamespace} sync failed: ${error instanceof Error ? error.message : String(error)}`)
-              }
-            }
-          } catch (error) {
-            ctx.logger.warn(`dsh-gitlab: skill source ${source.id} sync failed: ${error instanceof Error ? error.message : String(error)}`)
-          }
-        })()
+        let invalidate: (() => void) | undefined
+        skillsCtx.effect(() => skillsCtx.skills.registerProvider((control) => {
+          invalidate = control.invalidate
+          return provider
+        }), `dsh-gitlab: skill ${source.id}`)
+        // Boot sync, best-effort; invalidate the catalog once the checkout
+        // settles so a first query does not observe a still-empty directory.
+        void syncSource(source).then(() => invalidate?.()).catch((error) => {
+          ctx.logger.warn(`dsh-gitlab: skill source ${source.id} sync failed: ${error instanceof Error ? error.message : String(error)}`)
+        })
       }
     })
+
+    // Manual re-sync of one source (or every source) — the pull endpoint the
+    // settings panel will call.
+    ctx.effect(() => ctx.webServer.register({
+      kind: 'exact',
+      path: '/gitlab/skills/pull',
+      handler: async (req, res) => {
+        if (!isTrustedLocalRequest(req)) {
+          res.writeHead(403)
+          res.end('forbidden')
+          return
+        }
+        if (req.method !== 'POST') {
+          res.writeHead(405)
+          res.end()
+          return
+        }
+        const body = await readJsonBody(req) as Partial<{ sourceId: unknown }> | undefined
+        const target = typeof body?.sourceId === 'string' ? sourceById(body.sourceId) : undefined
+        if (body?.sourceId !== undefined && target === undefined) {
+          res.writeHead(404)
+          res.end('unknown sourceId')
+          return
+        }
+        const targets = target !== undefined ? [target] : skillSources
+        try {
+          await Promise.all(targets.map(source => syncSource(source)))
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ ok: true }))
+        } catch (error) {
+          res.writeHead(500)
+          res.end(error instanceof Error ? error.message : 'sync failed')
+        }
+      },
+    }), 'dsh-gitlab: skills pull route')
+
+    // Write one checked-out skill's SKILL.md back to GitLab (commit + push).
+    ctx.effect(() => ctx.webServer.register({
+      kind: 'exact',
+      path: '/gitlab/skills/save',
+      handler: async (req, res) => {
+        if (!isTrustedLocalRequest(req)) {
+          res.writeHead(403)
+          res.end('forbidden')
+          return
+        }
+        if (req.method !== 'POST') {
+          res.writeHead(405)
+          res.end()
+          return
+        }
+        const body = await readJsonBody(req) as Partial<{ sourceId: unknown; repo: unknown; content: unknown; message: unknown }> | undefined
+        const source = typeof body?.sourceId === 'string' ? sourceById(body.sourceId) : undefined
+        const repo = typeof body?.repo === 'string' && body.repo !== '' ? body.repo : undefined
+        const content = typeof body?.content === 'string' ? body.content : undefined
+        if (source === undefined || repo === undefined || content === undefined) {
+          res.writeHead(400)
+          res.end('sourceId, repo, and content are required')
+          return
+        }
+        const dest = join(cloneRoot, source.id, repo)
+        if (!existsSync(dest)) {
+          res.writeHead(404)
+          res.end('skill repository is not checked out; pull it first')
+          return
+        }
+        try {
+          await writeFile(join(dest, 'SKILL.md'), content)
+          await gitCommitPush(dest, typeof body?.message === 'string' && body.message !== '' ? body.message : `update skill ${repo}`)
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ ok: true }))
+        } catch (error) {
+          res.writeHead(500)
+          res.end(error instanceof Error ? error.message : 'save failed')
+        }
+      },
+    }), 'dsh-gitlab: skills save route')
   }
 }
