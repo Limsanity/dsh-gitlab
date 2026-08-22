@@ -101,6 +101,16 @@ skillCloneRoot: ~/.dsh/skills-gitlab   # optional, defaults to ~/.dsh/skills-git
 
 Routes sit behind the loopback trust fence and the web login session cookie (same as `/gitlab/status` and `/gitlab/actions`); the matching UI lives on the **Settings → GitLab Skills** page.
 
+### Model tools
+
+The agent can call these directly (equivalent to the UI):
+
+| Tool | Meaning |
+|---|---|
+| `gitlab_skill_pull` | sync one source (`sourceId` optional; omit for all) |
+| `gitlab_skill_save` | write back one skill's `SKILL.md` and commit + push (**requires approval**) |
+| `gitlab_skill_remove` | delete only the local checkout, never the remote repository |
+
 ## Tokens
 
 Resolution order (highest first):
