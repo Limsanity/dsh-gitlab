@@ -283,6 +283,12 @@ export function apply(ctx: Context, config: Config): void {
       source.ref ?? null, source.rank ?? null, source.includeSubgroups ?? null,
     ]),
   )
+  // Schemastery coerces an absent array field to [], so an empty settings
+  // list cannot be told apart from "never configured". Treat an empty list as
+  // "not configured": the plugin config's sources win until the settings
+  // section actually lists one.
+  const effectiveSkillSources = (settingsSources: SkillSource[] | undefined): SkillSource[] =>
+    settingsSources !== undefined && settingsSources.length > 0 ? settingsSources : (config.skillSources ?? [])
 
   const rowsByProject = new Map<string, ProjectRows>()
   const apisByProject = new Map<string, GitlabApi>()
@@ -584,7 +590,7 @@ export function apply(ctx: Context, config: Config): void {
     // Apply persisted skill sources on first read. The skill providers may
     // register before or after this seed, so reconcile through the shared
     // `resyncProviders` hook either way.
-    const seededSources = settingsSection.skillSources ?? config.skillSources ?? []
+    const seededSources = effectiveSkillSources(settingsSection.skillSources)
     if (sourcesKey(skillSources) !== sourcesKey(seededSources)) {
       skillSources = seededSources
       if (resyncProviders !== undefined) void resyncProviders()
@@ -624,7 +630,7 @@ export function apply(ctx: Context, config: Config): void {
     scope.watch((next) => {
       settingsSection = next
       for (const project of rowsByProject.keys()) void refresh(project)
-      const nextSources = next.skillSources ?? config.skillSources ?? []
+      const nextSources = effectiveSkillSources(next.skillSources)
       if (sourcesKey(skillSources) !== sourcesKey(nextSources)) {
         skillSources = nextSources
         if (resyncProviders !== undefined) void resyncProviders()
