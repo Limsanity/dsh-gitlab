@@ -13,8 +13,13 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import { Button, DisclosureRow, Input, Pill, StateDot, Toast, type StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { WorkspaceListState } from '@deepseek-ai/dsh-client-runtime/client'
+// `@deepseek-ai/dsh-client-runtime` was removed upstream in DSH 0.1.2-alpha; the
+// workspace state type now lives in the workspace-controller package.
+import type { WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
+// `ctx.slots` is declared on the client Context by ui-renderer at 0.1.5-rc.1
+// (it used to live in ui-slots); this type-only import pulls that augmentation in.
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // Type-only: pulls the 'settings.section' SlotMap declaration owned by the
 // settings surface (the section itself edits the token through this
@@ -153,7 +158,7 @@ const style: Record<string, CSSProperties> = {
 /** The framework kit subset the tab component reads; the composed props supply the rest. */
 interface GitlabViewProps {
   sessionId: string
-  useWorkspaces: SnapshotSelectorHook<WorkspaceListState>
+  useWorkspaces: SnapshotSelectorHook<WorkspaceSnapshot>
 }
 
 /** The GitLab tab body: pipelines and open MRs of the open session's workspace. */

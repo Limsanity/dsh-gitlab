@@ -1,0 +1,6 @@
+packages:
+  - .
+nodeLinker: hoisted
+autoInstallPeers: false
+overrides:
+  "@deepseek-ai/schemastery": 3.18.2

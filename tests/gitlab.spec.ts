@@ -16,7 +16,7 @@ import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import WebServer from '@deepseek-ai/dsh-host-webserver'
-import { SettingsConflictError, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { SettingsConflictError, type SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import { GitlabApi, parseGitRemote } from '../src/gitlab.ts'
 import * as GitlabUi from '../src/index.ts'
 
@@ -135,7 +135,7 @@ function fakeSettingsPlugin(initial: Record<string, unknown> = {}): { name: stri
   const fire = (): void => { for (const callback of watchers) callback(section) }
   const guard = (expectedRevision: number | undefined): void => {
     if (expectedRevision !== undefined && expectedRevision !== revision) {
-      throw new SettingsConflictError(settingsNamespace('gitlab'), expectedRevision, revision)
+      throw new SettingsConflictError('gitlab' as SettingsNamespace, expectedRevision, revision)
     }
   }
   const deepMerge = (patch: Record<string, unknown>): Record<string, unknown> => {
@@ -150,7 +150,7 @@ function fakeSettingsPlugin(initial: Record<string, unknown> = {}): { name: stri
     apply: (ctx: Context) => {
       ctx.provide('settings', {
         writable: true,
-        describe: () => [{ ns: settingsNamespace('gitlab'), revision }],
+        describe: () => [{ ns: 'gitlab' as SettingsNamespace, revision }],
         register: (ns: string, _schema: unknown) => ({
           get: () => section,
           watch: (callback: (next: unknown) => void) => { watchers.push(callback); return () => {} },
