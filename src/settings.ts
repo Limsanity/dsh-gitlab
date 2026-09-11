@@ -8,11 +8,19 @@
  * @module @lim324/dsh-gitlab/src/settings
  */
 
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
 
-/** The settings namespace owning the GitLab surface's user section. */
-export const GITLAB_SETTINGS_NAMESPACE = settingsNamespace('gitlab')
+/**
+ * The settings namespace owning the GitLab surface's user section.
+ *
+ * The `settingsNamespace()` runtime helper was removed upstream in DSH 0.1.2-alpha
+ * (`refactor(services): move shared values behind service APIs`); the namespace
+ * string is now validated by `SettingsProvider.register` through the type-level
+ * `SettingsNamespaceInput`. The literal stays the same, so stored sections are
+ * unaffected.
+ */
+export const GITLAB_SETTINGS_NAMESPACE = 'gitlab' as SettingsNamespace
 
 /** One GitLab skill source: a group whose repositories are individual skills. */
 export interface GitlabSkillSource {
