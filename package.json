@@ -38,7 +38,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && tsdown -c tsdown.host.ts && tsdown -c tsdown.client.ts",
-    "prepare": "pnpm run build",
+    "prepare": "test -f lib/index.js || pnpm run build",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
