@@ -696,7 +696,7 @@ export function apply(ctx: Context, config: Config): void {
   // (or pulled) under the shared checkout root. `ctx.inject` waits for the
   // optional skill seam, so a deployment without skills leaves the surface
   // untouched; sources are dynamic and re-registered on settings changes.
-  const cloneRoot = config.skillCloneRoot ?? join(homedir(), '.dsh', 'skills-gitlab')
+  const cloneRoot = config.skillCloneRoot ?? join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'skills-gitlab')
 
   // Per-source instance facts: each source may live on a different GitLab
   // host with its own token credential.

@@ -65,13 +65,13 @@ skillSources:
   - { id: team, group: my-org/team-skills, rank: 250 }
   # another instance with its own token
   - { id: internal, group: eng/skills, baseUrl: https://gitlab.internal.example/api/v4, tokenEnv: GITLAB_INTERNAL_TOKEN }
-skillCloneRoot: ~/.dsh/skills-gitlab   # optional, defaults to ~/.dsh/skills-gitlab
+skillCloneRoot: ~/.dsh/skills-gitlab   # optional; defaults to <DSH_HOME>/skills-gitlab (~/.dsh/skills-gitlab when DSH_HOME is unset)
 ```
 
 ### Local layout and discovery
 
 ```
-~/.dsh/skills-gitlab/
+<DSH_HOME>/skills-gitlab/          # ~/.dsh/skills-gitlab when DSH_HOME is unset
   core/
     skill-a/SKILL.md    # the skill-a repository under the group
     skill-b/SKILL.md

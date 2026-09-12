@@ -63,13 +63,13 @@ skillSources:
   - { id: team, group: my-org/team-skills, rank: 250 }
   # 另一个实例，独立 token
   - { id: internal, group: eng/skills, baseUrl: https://gitlab.internal.example/api/v4, tokenEnv: GITLAB_INTERNAL_TOKEN }
-skillCloneRoot: ~/.dsh/skills-gitlab   # 可选，默认 ~/.dsh/skills-gitlab
+skillCloneRoot: ~/.dsh/skills-gitlab   # 可选，默认 <DSH_HOME>/skills-gitlab（DSH_HOME 未设置时为 ~/.dsh/skills-gitlab）
 ```
 
 ### 本地结构与发现
 
 ```
-~/.dsh/skills-gitlab/
+<DSH_HOME>/skills-gitlab/          # DSH_HOME 未设置时即 ~/.dsh/skills-gitlab
   core/
     skill-a/SKILL.md    # group 里的仓库 skill-a
     skill-b/SKILL.md
