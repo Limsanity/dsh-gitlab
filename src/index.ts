@@ -31,9 +31,9 @@ import { gitClone, gitCommitPush, gitPull, refreshOriginToken } from './git.ts'
 import { GitlabApi, parseGitRemote, type GitlabRemote, type MrRow, type PipelineRow } from './gitlab.ts'
 import { isTrustedLocalRequest } from './fence.ts'
 import { createLocalSkillProvider } from './skill.ts'
-import { GITLAB_SETTINGS_NAMESPACE, GitlabSettingsSchema, GitlabSkillSourceSchema, type GitlabSettings, type GitlabSkillSource } from './settings.ts'
+import { GitlabHostTokensSchema, GitlabSkillSourceSchema, type GitlabSettings, type GitlabSkillSource } from './settings.ts'
 
-export { GITLAB_SETTINGS_NAMESPACE, GitlabSettingsSchema, GitlabSkillSourceSchema, type GitlabSettings, type GitlabSkillSource } from './settings.ts'
+export { GitlabHostTokensSchema, GitlabSkillSourceSchema, type GitlabSettings, type GitlabSkillSource } from './settings.ts'
 
 /** Backward-compatible alias: a GitLab skill source (see {@link GitlabSkillSource}). */
 export type SkillSource = GitlabSkillSource
@@ -42,6 +42,22 @@ const execFileAsync = promisify(execFile)
 
 /** Stable Cordis plugin name. */
 export const name = 'dsh-gitlab'
+
+/**
+ * The Cordis entry id owning this plugin's `Config`.
+ *
+ * DSH 0.2.0 keys settings by **entry id** (`settings.describe()` reports
+ * `ns: entry.options.id`) and its legacy-`settings.yaml` importer maps a
+ * section name onto that same id. The entry id is therefore also the settings
+ * namespace and the legacy section name, and all three must agree — which is
+ * why the profile's `cordis.patch.yml` mounts this plugin as `- id: gitlab`
+ * rather than `dsh-gitlab`.
+ *
+ * 🔴 Renaming it strands stored settings: the old `gitlab:` section would no
+ * longer match an entry, and 0.2.0 would skip it with a warning, leaving the
+ * tokens only in `settings.yaml.imported`.
+ */
+const GITLAB_ENTRY_ID = 'gitlab'
 
 /** Services required before the GitLab surface can mount. */
 export const inject = ['webServer']
@@ -64,6 +80,15 @@ export interface Config {
   tokenEnv?: string
   /** GitLab skill sources, each a group whose repositories are individual skills. */
   skillSources?: SkillSource[]
+  /**
+   * Per-host token overrides keyed by the workspace remote's host
+   * (`gitlab.com`, `git.internal.example`, …). A matching entry beats
+   * {@link Config.token} for that host only. Owned by the Web settings panel:
+   * DSH 0.2.0 derives settings namespaces from entry configs, so this field
+   * replaced the plugin's own `gitlab` settings namespace. Every value carries
+   * the secret role, so settings wires redact it.
+   */
+  hostTokens?: Record<string, string>
   /** Local checkout root; each source clones its repositories under `<skillCloneRoot>/<id>/`. */
   skillCloneRoot?: string
 }
@@ -76,6 +101,7 @@ export const Config: z<Config> = z.object({
   pollMs: z.natural().min(5000).default(30_000),
   tokenEnv: z.string().role('credential-ref').default('GITLAB_TOKEN'),
   skillSources: z.array(GitlabSkillSourceSchema).default([]),
+  hostTokens: GitlabHostTokensSchema,
   skillCloneRoot: z.string(),
 })
 
@@ -582,60 +608,79 @@ export function apply(ctx: Context, config: Config): void {
   }
   let settingsFace: GitlabSettingsFace | undefined
   ctx.inject(['settings'], (settingsCtx) => {
-    const scope = settingsCtx.settings.register(GITLAB_SETTINGS_NAMESPACE, GitlabSettingsSchema)
-    // Seed the section: watchers only fire on commits, so the value that
-    // was already persisted before this boot must be read once at
-    // registration.
-    settingsSection = scope.get()
-    // Apply persisted skill sources on first read. The skill providers may
-    // register before or after this seed, so reconcile through the shared
-    // `resyncProviders` hook either way.
-    const seededSources = effectiveSkillSources(settingsSection.skillSources)
-    if (sourcesKey(skillSources) !== sourcesKey(seededSources)) {
-      skillSources = seededSources
-      if (resyncProviders !== undefined) void resyncProviders()
-    }
-    const revisionOf = (): number | undefined =>
-      settingsCtx.settings.describe({ redactSecrets: true }).find(candidate => candidate.ns === GITLAB_SETTINGS_NAMESPACE)?.revision
-    settingsFace = {
-      get: () => {
-        const section = scope.get()
-        return {
-          available: true,
-          writable: settingsCtx.settings.writable,
-          tokenSet: section.token !== undefined,
-          // Only the host names cross the wire: a listed host always has a
-          // stored value (the schema rejects undefined dict entries).
-          hostTokens: Object.keys(section.hostTokens ?? {}),
-          revision: revisionOf(),
-        }
-      },
-      update: async (host, token, expectedRevision) => {
-        if (token === undefined) {
-          const path = host === undefined || host === '' ? ['token'] : ['hostTokens', host]
-          await settingsCtx.settings.mutate(GITLAB_SETTINGS_NAMESPACE, [{ op: 'unset', path }], expectedRevision)
-        } else if (host === undefined || host === '') {
-          await settingsCtx.settings.update(GITLAB_SETTINGS_NAMESPACE, { token }, expectedRevision)
-        } else {
-          await settingsCtx.settings.update(GITLAB_SETTINGS_NAMESPACE, { hostTokens: { [host]: token } }, expectedRevision)
-        }
-      },
-      updateSources: async (sources, expectedRevision) => {
-        await settingsCtx.settings.update(GITLAB_SETTINGS_NAMESPACE, { skillSources: sources }, expectedRevision)
-      },
-    }
-    // Re-poll every live project when the section changes: a token edit
-    // flips `authed` and read/write behavior on the next snapshot without a
-    // restart. A skill-source change re-registers providers live.
-    scope.watch((next) => {
+    /**
+     * Reconcile the live surface with a new section value.
+     *
+     * DSH 0.2.0 removed `SettingsForms.register` and `scope.watch`: the settings
+     * namespace is this entry's own `Config`, so the persisted value arrives
+     * through `apply(ctx, config)`. That leaves exactly two moments to react to
+     * — the boot-time seed and this plugin's own writes — so both funnel here.
+     */
+    const reconcileSection = (next: GitlabSettings): void => {
       settingsSection = next
+      // A token edit flips `authed` and read/write behavior on the next
+      // snapshot without a restart.
       for (const project of rowsByProject.keys()) void refresh(project)
+      // A skill-source change re-registers providers live.
       const nextSources = effectiveSkillSources(next.skillSources)
       if (sourcesKey(skillSources) !== sourcesKey(nextSources)) {
         skillSources = nextSources
         if (resyncProviders !== undefined) void resyncProviders()
       }
-    })
+    }
+    // Seed from the plugin config: 0.2.0 derives the settings namespace from
+    // this entry's Config, so a persisted value (including a legacy
+    // `settings.yaml` section the core imported) is already here.
+    reconcileSection({ token: config.token, hostTokens: config.hostTokens, skillSources: config.skillSources })
+    const revisionOf = (): number | undefined =>
+      settingsCtx.settings.describe({ redactSecrets: true }).find(candidate => candidate.ns === GITLAB_ENTRY_ID)?.revision
+    /**
+     * Fold one accepted write into the local section. Secrets read back redacted
+     * through `describe()`, so the value this plugin just wrote is the only
+     * trustworthy source for `tokenSet` / `hostTokens` until the next boot.
+     */
+    const sectionAfterWrite = (host: string | undefined, token: string | undefined, sources?: SkillSource[]): GitlabSettings => {
+      const current: GitlabSettings = settingsSection ?? {}
+      if (sources !== undefined) return { ...current, skillSources: sources }
+      if (token === undefined) {
+        if (host === undefined || host === '') {
+          const cleared = { ...current }
+          delete cleared.token
+          return cleared
+        }
+        const hostTokens = { ...(current.hostTokens ?? {}) }
+        delete hostTokens[host]
+        return { ...current, hostTokens }
+      }
+      if (host === undefined || host === '') return { ...current, token }
+      return { ...current, hostTokens: { ...(current.hostTokens ?? {}), [host]: token } }
+    }
+    settingsFace = {
+      get: () => ({
+        available: true,
+        writable: settingsCtx.settings.writable,
+        tokenSet: settingsSection?.token !== undefined,
+        // Only the host names cross the wire: a listed host always has a
+        // stored value (the schema rejects undefined dict entries).
+        hostTokens: Object.keys(settingsSection?.hostTokens ?? {}),
+        revision: revisionOf(),
+      }),
+      update: async (host, token, expectedRevision) => {
+        if (token === undefined) {
+          const path = host === undefined || host === '' ? ['token'] : ['hostTokens', host]
+          await settingsCtx.settings.mutate(GITLAB_ENTRY_ID, [{ op: 'unset', path }], expectedRevision)
+        } else if (host === undefined || host === '') {
+          await settingsCtx.settings.update(GITLAB_ENTRY_ID, { token }, expectedRevision)
+        } else {
+          await settingsCtx.settings.update(GITLAB_ENTRY_ID, { hostTokens: { [host]: token } }, expectedRevision)
+        }
+        reconcileSection(sectionAfterWrite(host, token))
+      },
+      updateSources: async (sources, expectedRevision) => {
+        await settingsCtx.settings.update(GITLAB_ENTRY_ID, { skillSources: sources }, expectedRevision)
+        reconcileSection(sectionAfterWrite(undefined, undefined, sources))
+      },
+    }
   })
 
   // The settings route: read the saved-token state and write/clear the

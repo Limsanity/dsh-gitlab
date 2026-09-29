@@ -1,26 +1,22 @@
 /**
  * The user-editable settings section of the GitLab surface: the token the
- * host uses for GitLab API access. Registered under the `gitlab` settings
- * namespace, so the Web settings panel can edit it without a restart and the
- * host half re-tokenizes its live API clients on the update. The token
- * carries the secret role, so settings wires redact it and the browser never
- * reads a stored token back.
+ * host uses for GitLab API access. The token carries the secret role, so
+ * settings wires redact it and the browser never reads a stored token back.
+ *
+ * DSH 0.2.0 derives settings namespaces from profile entries and removed
+ * `SettingsForms.register`, so this module no longer registers a namespace:
+ * the section **is** the plugin's own `Config`, edited through the Web
+ * settings panel and read from `apply(ctx, config)`.
+ *
+ * 🔴 The Cordis entry id must stay `gitlab` (see `GITLAB_ENTRY_ID` in
+ * `index.ts`): 0.2.0's `settings.yaml` importer maps a legacy section name to
+ * the owning entry id, so a `gitlab:` section in the old document lands in
+ * this entry instead of being skipped with a warning.
+ *
  * @module @lim324/dsh-gitlab/src/settings
  */
 
-import type { SettingsNamespace } from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
-
-/**
- * The settings namespace owning the GitLab surface's user section.
- *
- * The `settingsNamespace()` runtime helper was removed upstream in DSH 0.1.2-alpha
- * (`refactor(services): move shared values behind service APIs`); the namespace
- * string is now validated by `SettingsProvider.register` through the type-level
- * `SettingsNamespaceInput`. The literal stays the same, so stored sections are
- * unaffected.
- */
-export const GITLAB_SETTINGS_NAMESPACE = 'gitlab' as SettingsNamespace
 
 /** One GitLab skill source: a group whose repositories are individual skills. */
 export interface GitlabSkillSource {
@@ -51,13 +47,17 @@ export const GitlabSkillSourceSchema = z.object({
   includeSubgroups: z.boolean().default(true),
 })
 
-/** The user-editable GitLab settings section. */
+/**
+ * The settings fields the Web panel owns — a projection of the plugin's
+ * `Config`, kept as its own shape because the panel reads and writes them
+ * independently of the boot-time config values.
+ */
 export interface GitlabSettings {
   /**
    * Default GitLab personal access token, used for every GitLab host a
    * workspace points at unless a `hostTokens` entry overrides it; unset
-   * falls back to the plugin config, then the credentials service, then the
-   * `GITLAB_TOKEN` environment.
+   * falls back to the credentials service, then the `GITLAB_TOKEN`
+   * environment.
    */
   token?: string
   /**
@@ -73,9 +73,5 @@ export interface GitlabSettings {
   skillSources?: GitlabSkillSource[]
 }
 
-/** Wire-safe schema: every token carries the secret role, so settings wires redact them. */
-export const GitlabSettingsSchema: z<GitlabSettings> = z.object({
-  token: z.string().role('secret'),
-  hostTokens: z.dict(z.string().role('secret')),
-  skillSources: z.array(GitlabSkillSourceSchema),
-})
+/** Wire-safe schema for the per-host token overrides; every value carries the secret role. */
+export const GitlabHostTokensSchema = z.dict(z.string().role('secret'))
