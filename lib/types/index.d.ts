@@ -87,8 +87,8 @@ export declare const internals: {
     runGitBranch?: (dir: string) => Promise<string>;
 };
 /**
- * Resolve the git origin remote of a directory; undefined when the directory
- * is not a git checkout or has no origin.
+ * Resolve a directory's GitLab remote, preferring `origin`; undefined when the
+ * directory is not a git checkout or exposes no GitLab remote.
  * @param cwd - the directory to inspect.
  * @param run - the git runner (injected for tests).
  * @returns the parsed remote, or undefined.

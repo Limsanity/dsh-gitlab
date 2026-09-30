@@ -5,13 +5,14 @@
  * API. Unit sections pin remote parsing and the client's wire behavior.
  */
 
+import { execFileSync } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { once } from 'node:events'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
@@ -203,6 +204,46 @@ describe('parseGitRemote', () => {
     expect(parseGitRemote('not a remote')).toBeUndefined()
     expect(parseGitRemote('https://gitlab.com/../evil.git')).toBeUndefined()
     expect(parseGitRemote('https://gitlab.com/group//proj.git')).toBeUndefined()
+  })
+})
+
+describe('detectRemote', () => {
+  // The suite's other sections inject a fake git runner; this one exercises the
+  // real default runner against throwaway checkouts, so it must start clean.
+  beforeEach(() => {
+    GitlabUi.internals.runGit = undefined
+  })
+
+  /** A throwaway git checkout carrying exactly the given remotes. */
+  const checkout = async (...remotes: Array<[name: string, url: string]>): Promise<string> => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-gitlab-detect-'))
+    execFileSync('git', ['-C', dir, 'init', '--quiet'])
+    for (const [name, url] of remotes) execFileSync('git', ['-C', dir, 'remote', 'add', name, url])
+    return dir
+  }
+
+  it('falls back to a differently named remote when origin is absent', async () => {
+    // Regression: a checkout whose only remote is named `gitlab` used to answer
+    // undefined, so the whole tab reported "not a GitLab repository" even
+    // though that remote points at GitLab.
+    const dir = await checkout(['gitlab', 'https://gitlab.com/xplore2/lab/guandan.git'])
+    await expect(GitlabUi.detectRemote(dir)).resolves.toEqual({ host: 'gitlab.com', project: 'xplore2/lab/guandan' })
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('still prefers origin when the checkout has one', async () => {
+    const dir = await checkout(['gitlab', 'https://gitlab.com/other/proj.git'], ['origin', 'https://gitlab.com/group/proj.git'])
+    await expect(GitlabUi.detectRemote(dir)).resolves.toEqual({ host: 'gitlab.com', project: 'group/proj' })
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  it('is undefined without any remote, and outside a repository', async () => {
+    const bare = await checkout()
+    await expect(GitlabUi.detectRemote(bare)).resolves.toBeUndefined()
+    const plain = await mkdtemp(join(tmpdir(), 'dsh-gitlab-plain-'))
+    await expect(GitlabUi.detectRemote(plain)).resolves.toBeUndefined()
+    await rm(bare, { recursive: true, force: true })
+    await rm(plain, { recursive: true, force: true })
   })
 })
 
