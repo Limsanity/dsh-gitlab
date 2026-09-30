@@ -17,7 +17,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { type GitlabRemote, type MrRow, type PipelineRow } from './gitlab.ts';
 import { type GitlabSkillSource } from './settings.ts';
-export { GITLAB_SETTINGS_NAMESPACE, GitlabSettingsSchema, GitlabSkillSourceSchema, type GitlabSettings, type GitlabSkillSource } from './settings.ts';
+export { GitlabHostTokensSchema, GitlabSkillSourceSchema, type GitlabSettings, type GitlabSkillSource } from './settings.ts';
 /** Backward-compatible alias: a GitLab skill source (see {@link GitlabSkillSource}). */
 export type SkillSource = GitlabSkillSource;
 /** Stable Cordis plugin name. */
@@ -42,6 +42,15 @@ export interface Config {
     tokenEnv?: string;
     /** GitLab skill sources, each a group whose repositories are individual skills. */
     skillSources?: SkillSource[];
+    /**
+     * Per-host token overrides keyed by the workspace remote's host
+     * (`gitlab.com`, `git.internal.example`, …). A matching entry beats
+     * {@link Config.token} for that host only. Owned by the Web settings panel:
+     * DSH 0.2.0 derives settings namespaces from entry configs, so this field
+     * replaced the plugin's own `gitlab` settings namespace. Every value carries
+     * the secret role, so settings wires redact it.
+     */
+    hostTokens?: Record<string, string>;
     /** Local checkout root; each source clones its repositories under `<skillCloneRoot>/<id>/`. */
     skillCloneRoot?: string;
 }
