@@ -131,6 +131,18 @@ export const Config = z.object({
 const MAX_ACTION_BYTES = 8192
 
 /**
+ * Probe budget for `GET https://<host>/api/v4/version`.
+ *
+ * Five seconds turned out to be too tight on this machine's network path: the
+ * TLS handshake alone measures ~4–5 s for both gitlab.com and api.github.com,
+ * so a 5 s budget aborted every probe and the whole surface reported "not a
+ * GitLab repository" for a repository whose remote it had detected correctly.
+ * A concluded probe is cached per host, so the larger budget is paid at most
+ * once per host per process.
+ */
+const GITLAB_PROBE_TIMEOUT_MS = 15_000
+
+/**
  * Resource-safety bound, not a tunable: a skill source may hold dozens of
  * repositories, and cloning or pulling them all at once would spawn a
  * corresponding number of git processes and TLS connections. Run at most this
@@ -385,23 +397,28 @@ export function apply(ctx: Context, config: Config): void {
    * endpoint exists but demands authentication), proves the host serves the
    * GitLab API; anything else does not. Network and TLS failures leave the
    * host undetected — explicit `config.baseUrl` remains the escape hatch.
+   *
+   * Only a definite answer is cached. A transport failure says nothing about
+   * the host, so remembering it would poison this cache for the rest of the
+   * process — and the probe's answer gates the whole surface, so one timed-out
+   * handshake would report "not a GitLab repository" until a restart. Retrying
+   * costs one request per workspace view and lets a slow link recover.
    * @param host - the remote host to probe.
    * @returns whether the host serves the GitLab API.
    */
   const probeGitlab = async (host: string): Promise<boolean> => {
     const cached = probeByHost.get(host)
     if (cached !== undefined) return cached
-    let result = false
     try {
       const impl = internals.fetchImpl ?? fetch
-      const res = await impl(`https://${host}/api/v4/version`, { signal: AbortSignal.timeout(5000) })
-      if (res.status === 401) result = true
-      else if (res.ok) result = (await res.text()).includes('"version"')
+      const res = await impl(`https://${host}/api/v4/version`, { signal: AbortSignal.timeout(GITLAB_PROBE_TIMEOUT_MS) })
+      const result = res.status === 401 || (res.ok && (await res.text()).includes('"version"'))
+      probeByHost.set(host, result)
+      return result
     } catch {
-      // Failure proves nothing; the host stays undetected.
+      // Inconclusive: leave the host uncached so a later request can retry.
+      return false
     }
-    probeByHost.set(host, result)
-    return result
   }
   // Registered synchronously so the pollers die with the fiber.
   ctx.effect(() => () => {
