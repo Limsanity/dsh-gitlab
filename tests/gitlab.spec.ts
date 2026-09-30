@@ -125,15 +125,19 @@ function fakeGitlab(): { fetchImpl: typeof fetch; seen: string[]; tokens: string
 }
 
 /**
- * A settings service faithful to the seam subset the settings route
- * touches: register/get/watch plus service-level update/mutate with deep
- * merge, revision guarding, and describe carrying the revision.
+ * A settings service faithful to the 0.2.0 `SettingsForms` subset this plugin
+ * touches: `describe` / `writable` / `update` / `mutate`, with deep merge,
+ * revision guarding, and the revision reported by `describe`.
+ *
+ * It deliberately provides **no** `register` and **no** `watch`. DSH 0.2.0
+ * removed both: the settings namespace is this entry's own `Config`, so the
+ * plugin learns a value either from that config at boot or from its own
+ * writes. A regression that reintroduces a dependency on either API fails
+ * loudly here, instead of passing against a double that implements both.
  */
-function fakeSettingsPlugin(initial: Record<string, unknown> = {}): { name: string; apply: (ctx: Context) => void } {
-  const watchers: Array<(next: unknown) => void> = []
-  let section: Record<string, unknown> = { ...initial }
+function fakeSettingsPlugin(): { name: string; apply: (ctx: Context) => void } {
+  let section: Record<string, unknown> = {}
   let revision = 0
-  const fire = (): void => { for (const callback of watchers) callback(section) }
   const guard = (expectedRevision: number | undefined): void => {
     if (expectedRevision !== undefined && expectedRevision !== revision) {
       throw new SettingsConflictError('gitlab' as SettingsNamespace, expectedRevision, revision)
@@ -152,16 +156,11 @@ function fakeSettingsPlugin(initial: Record<string, unknown> = {}): { name: stri
       ctx.provide('settings', {
         writable: true,
         describe: () => [{ ns: 'gitlab' as SettingsNamespace, revision }],
-        register: (ns: string, _schema: unknown) => ({
-          get: () => section,
-          watch: (callback: (next: unknown) => void) => { watchers.push(callback); return () => {} },
-        }),
         update: async (ns: string, patch: Record<string, unknown>, expectedRevision?: number) => {
           expect(ns).toBe('gitlab')
           guard(expectedRevision)
           section = deepMerge(patch)
           revision++
-          fire()
         },
         mutate: async (ns: string, ops: Array<{ op: string; path: readonly string[] }>, expectedRevision?: number) => {
           expect(ns).toBe('gitlab')
@@ -185,7 +184,6 @@ function fakeSettingsPlugin(initial: Record<string, unknown> = {}): { name: stri
             }
           }
           revision++
-          fire()
         },
       })
     },
@@ -476,75 +474,6 @@ describe('real Loader composition', () => {
     expect(bad.status).toBe(400)
   })
 
-  it('registers the gitlab settings namespace and re-tokenizes live clients on user edits', { timeout: 60_000 }, async () => {
-    const { fetchImpl, seen } = fakeGitlab()
-    GitlabUi.internals.fetchImpl = fetchImpl
-    // A structural settings service: register/get/watch/update, with the
-    // namespace and schema captured for the assertions.
-    const registrations: Array<{ ns: string; schema: unknown }> = []
-    let update: ((patch: object) => Promise<void>) | undefined
-    const fakeSettings = {
-      name: 'fake-settings',
-      apply: (ctx: Context) => {
-        const watchers: Array<(next: unknown) => void> = []
-        let section: Record<string, unknown> = {}
-        ctx.provide('settings', {
-          register: (ns: string, schema: unknown) => {
-            registrations.push({ ns, schema })
-            return {
-              get: () => section,
-              watch: (callback: (next: unknown) => void) => { watchers.push(callback); return () => {} },
-              update: async (patch: object) => {
-                section = { ...section, ...patch }
-                for (const callback of watchers) callback(section)
-              },
-            }
-          },
-        })
-        update = async (patch: object) => {
-          section = { ...section, ...patch }
-          for (const callback of watchers) callback(section)
-        }
-      },
-    }
-    const loaded = await loadComposition([
-      ...WEBSERVER_ROW,
-      "- name: 'fake-settings'",
-      '',
-      "- name: '@lim324/dsh-gitlab'",
-      '  config:',
-      "    project: 'group/proj'",
-      '    pollMs: 5000',
-      '',
-    ], { 'fake-settings': fakeSettings })
-    const port = loaded.webServer.port
-
-    // The namespace registers once, under its branded name.
-    expect(registrations.map(entry => entry.ns)).toEqual(['gitlab'])
-
-    // No config token: writes answer 401.
-    await (await fetch(`http://127.0.0.1:${String(port)}/gitlab/status?workspaceId=__configured__`)).json()
-    const before = await fetch(`http://127.0.0.1:${String(port)}/gitlab/actions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ op: 'approve', iid: 3, project: 'group/proj' }),
-    })
-    expect(before.status).toBe(401)
-
-    // The Settings panel's save re-tokenizes the live client: the same
-    // action now succeeds and the snapshot flips to authed.
-    await update!({ token: 'settings-tok' })
-    const after = await fetch(`http://127.0.0.1:${String(port)}/gitlab/actions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ op: 'approve', iid: 3, project: 'group/proj' }),
-    })
-    expect(after.status).toBe(200)
-    expect(seen).toContain('POST https://gitlab.com/api/v4/projects/group%2Fproj/merge_requests/3/approve')
-    const row = await (await fetch(`http://127.0.0.1:${String(port)}/gitlab/status?workspaceId=__configured__`)).json() as GitlabUi.WorkspaceStatus
-    expect(row.authed).toBe(true)
-  })
-
   it('serves the token state over the fenced /gitlab/settings route, revision-guarded', { timeout: 60_000 }, async () => {
     const { fetchImpl, seen } = fakeGitlab()
     GitlabUi.internals.fetchImpl = fetchImpl
@@ -580,6 +509,10 @@ describe('real Loader composition', () => {
     })
     expect(approve.status).toBe(200)
     expect(seen).toContain('POST https://gitlab.com/api/v4/projects/group%2Fproj/merge_requests/3/approve')
+    // The snapshot itself flips to authed: the surface is not merely able to
+    // act, it also reports the token as live without a restart.
+    const authed = await (await fetch(`http://127.0.0.1:${String(port)}/gitlab/status?workspaceId=__configured__`)).json() as GitlabUi.WorkspaceStatus
+    expect(authed.authed).toBe(true)
 
     // A stale revision answers 409 and does not overwrite.
     const stale = await fetch(`http://127.0.0.1:${String(port)}/gitlab/settings`, {
@@ -699,9 +632,12 @@ describe('real Loader composition', () => {
     expect(tokens[seen.indexOf('POST https://git-ops.internal.example/api/v4/projects/acme%2Fother/merge_requests/3/approve')]).toBe('default-tok')
   })
 
-  it('seeds the token persisted before this boot without a commit', { timeout: 60_000 }, async () => {
+  it('arms the token persisted in the entry config before this boot', { timeout: 60_000 }, async () => {
     const { fetchImpl, seen, tokens } = fakeGitlab()
     GitlabUi.internals.fetchImpl = fetchImpl
+    // 0.2.0 keeps an entry's settings in that entry's own Config and hands the
+    // persisted value to apply(ctx, config) at boot: there is no settings read
+    // to make and no watch to wait for. The token therefore arrives as config.
     const loaded = await loadComposition([
       ...WEBSERVER_ROW,
       "- name: 'fake-settings'",
@@ -710,11 +646,12 @@ describe('real Loader composition', () => {
       '  config:',
       "    project: 'group/proj'",
       '    pollMs: 5000',
+      "    token: 'persisted-tok'",
       '',
-    ], { 'fake-settings': fakeSettingsPlugin({ token: 'persisted-tok' }) })
+    ], { 'fake-settings': fakeSettingsPlugin() })
     const port = loaded.webServer.port
 
-    // No watch ever fired; the registration-time read alone must arm the token.
+    // No write, no watch, no commit: the boot-time config seed alone arms it.
     await (await fetch(`http://127.0.0.1:${String(port)}/gitlab/status?workspaceId=__configured__`)).json()
     const approve = await fetch(`http://127.0.0.1:${String(port)}/gitlab/actions`, {
       method: 'POST',
