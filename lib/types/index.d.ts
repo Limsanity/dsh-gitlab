@@ -13,7 +13,7 @@
  * without a restart.
  * @module @lim324/dsh-gitlab
  */
-import type { Context } from '@deepseek-ai/cordis';
+import type { Context, Volatile } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 import { type GitlabRemote, type MrRow, type PipelineRow } from './gitlab.ts';
 import { type GitlabSkillSource } from './settings.ts';
@@ -26,8 +26,15 @@ export declare const name = "dsh-gitlab";
 export declare const inject: string[];
 /** Plugin config: GitLab access and polling cadence. */
 export interface Config {
-    /** GitLab personal access token; omit for read-only (pipeline and MR lists still work on public projects). The settings-section token overrides this. */
-    token?: string;
+    /**
+     * GitLab personal access token; omit for read-only (pipeline and MR lists still
+     * work on public projects). The settings-section token overrides this.
+     *
+     * A `volatile()` schema field resolves to a {@link Volatile} reference rather
+     * than a bare value, so every read goes through `get()`; this surface keeps one
+     * unwrapped copy per boot in the file-private `configValue` helper.
+     */
+    token?: Volatile<string | undefined>;
     /** Explicit project path "group/project"; when set, workspace enumeration is skipped. */
     project?: string;
     /** API base URL override for self-managed instances; defaults to https://<remote-host>/api/v4. */
@@ -41,7 +48,7 @@ export interface Config {
      */
     tokenEnv?: string;
     /** GitLab skill sources, each a group whose repositories are individual skills. */
-    skillSources?: SkillSource[];
+    skillSources?: Volatile<readonly SkillSource[] | undefined>;
     /**
      * Per-host token overrides keyed by the workspace remote's host
      * (`gitlab.com`, `git.internal.example`, …). A matching entry beats
@@ -50,11 +57,61 @@ export interface Config {
      * replaced the plugin's own `gitlab` settings namespace. Every value carries
      * the secret role, so settings wires redact it.
      */
-    hostTokens?: Record<string, string>;
+    hostTokens?: Volatile<Readonly<Record<string, string>> | undefined>;
     /** Local checkout root; each source clones its repositories under `<skillCloneRoot>/<id>/`. */
     skillCloneRoot?: string;
 }
-export declare const Config: z<Config>;
+export declare const Config: z<Schemastery.ObjectS<NoInfer<{
+    token: z<string, string, "volatile">;
+    project: z<string, string, "plain">;
+    baseUrl: z<string, string, "plain">;
+    pollMs: z<number, number, "defined">;
+    tokenEnv: z<string, string, "defined">;
+    skillSources: z<NoInfer<({
+        id?: string | null | undefined;
+        group?: string | null | undefined;
+        baseUrl?: string | null | undefined;
+        tokenEnv?: string | null | undefined;
+        ref?: string | null | undefined;
+        rank?: number | null | undefined;
+        includeSubgroups?: boolean | null | undefined;
+    } & import("@deepseek-ai/cosmokit").Dict)[]>, NoInfer<Schemastery.ObjectT<NoInfer<{
+        id: z<string, string, "plain">;
+        group: z<string, string, "plain">;
+        baseUrl: z<string, string, "plain">;
+        tokenEnv: z<string, string, "plain">;
+        ref: z<string, string, "defined">;
+        rank: z<number, number, "defined">;
+        includeSubgroups: z<boolean, boolean, "defined">;
+    }>>[]>, "volatile-defined">;
+    hostTokens: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, "volatile">;
+    skillCloneRoot: z<string, string, "plain">;
+}>>, Schemastery.ObjectT<NoInfer<{
+    token: z<string, string, "volatile">;
+    project: z<string, string, "plain">;
+    baseUrl: z<string, string, "plain">;
+    pollMs: z<number, number, "defined">;
+    tokenEnv: z<string, string, "defined">;
+    skillSources: z<NoInfer<({
+        id?: string | null | undefined;
+        group?: string | null | undefined;
+        baseUrl?: string | null | undefined;
+        tokenEnv?: string | null | undefined;
+        ref?: string | null | undefined;
+        rank?: number | null | undefined;
+        includeSubgroups?: boolean | null | undefined;
+    } & import("@deepseek-ai/cosmokit").Dict)[]>, NoInfer<Schemastery.ObjectT<NoInfer<{
+        id: z<string, string, "plain">;
+        group: z<string, string, "plain">;
+        baseUrl: z<string, string, "plain">;
+        tokenEnv: z<string, string, "plain">;
+        ref: z<string, string, "defined">;
+        rank: z<number, number, "defined">;
+        includeSubgroups: z<boolean, boolean, "defined">;
+    }>>[]>, "volatile-defined">;
+    hostTokens: z<NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, NoInfer<import("@deepseek-ai/cosmokit").Dict<string, string>>, "volatile">;
+    skillCloneRoot: z<string, string, "plain">;
+}>>, "plain">;
 /** One workspace row in the wire snapshot. */
 export interface WorkspaceStatus {
     workspaceId: string;

@@ -21,7 +21,7 @@ import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { Context } from '@deepseek-ai/cordis'
+import type { Context, Volatile } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import { SettingsConflictError } from '@deepseek-ai/dsh-settings'
@@ -64,8 +64,15 @@ export const inject = ['webServer']
 
 /** Plugin config: GitLab access and polling cadence. */
 export interface Config {
-  /** GitLab personal access token; omit for read-only (pipeline and MR lists still work on public projects). The settings-section token overrides this. */
-  token?: string
+  /**
+   * GitLab personal access token; omit for read-only (pipeline and MR lists still
+   * work on public projects). The settings-section token overrides this.
+   *
+   * A `volatile()` schema field resolves to a {@link Volatile} reference rather
+   * than a bare value, so every read goes through `get()`; this surface keeps one
+   * unwrapped copy per boot in the file-private `configValue` helper.
+   */
+  token?: Volatile<string | undefined>
   /** Explicit project path "group/project"; when set, workspace enumeration is skipped. */
   project?: string
   /** API base URL override for self-managed instances; defaults to https://<remote-host>/api/v4. */
@@ -79,7 +86,7 @@ export interface Config {
    */
   tokenEnv?: string
   /** GitLab skill sources, each a group whose repositories are individual skills. */
-  skillSources?: SkillSource[]
+  skillSources?: Volatile<readonly SkillSource[] | undefined>
   /**
    * Per-host token overrides keyed by the workspace remote's host
    * (`gitlab.com`, `git.internal.example`, …). A matching entry beats
@@ -88,20 +95,35 @@ export interface Config {
    * replaced the plugin's own `gitlab` settings namespace. Every value carries
    * the secret role, so settings wires redact it.
    */
-  hostTokens?: Record<string, string>
+  hostTokens?: Volatile<Readonly<Record<string, string>> | undefined>
   /** Local checkout root; each source clones its repositories under `<skillCloneRoot>/<id>/`. */
   skillCloneRoot?: string
 }
 
-export const Config: z<Config> = z.object({
+// Not asserted against `Config`: a volatile field's schema input is the bare
+// value while its output is a `Volatile` reference, so no single interface can
+// describe both sides of the schema. The interface above documents the resolved
+// (output) shape, which is what `apply` receives — the same split the core's own
+// volatile-config plugins use.
+export const Config = z.object({
   // Schemastery members are optional unless marked required().
-  token: z.string().role('secret'),
+  //
+  // 🔴 The three fields the settings surface owns MUST be marked `volatile()`.
+  // DSH 0.2.0 only exposes the volatile projection of an entry's Config as an
+  // editable settings form: `SettingsForms.write` rejects a namespace whose
+  // schema yields no volatile form with `Plugin entry "gitlab" has no volatile
+  // fields`, and the legacy `settings.yaml` importer funnels every section
+  // through that same write. Without these markers the GitLab token can never
+  // be saved and a pre-0.2.0 `gitlab:` section is silently parked in
+  // `settings.yaml.imported`. Fields left plain stay ordinary configuration and
+  // are not offered to the settings panel.
+  token: z.string().role('secret').volatile(),
   project: z.string(),
   baseUrl: z.string(),
   pollMs: z.natural().min(5000).default(30_000),
   tokenEnv: z.string().role('credential-ref').default('GITLAB_TOKEN'),
-  skillSources: z.array(GitlabSkillSourceSchema).default([]),
-  hostTokens: GitlabHostTokensSchema,
+  skillSources: z.array(GitlabSkillSourceSchema).default([]).volatile(),
+  hostTokens: GitlabHostTokensSchema.volatile(),
   skillCloneRoot: z.string(),
 })
 
@@ -305,6 +327,14 @@ interface ProjectRows {
  * @param config - validated {@link Config}.
  */
 export function apply(ctx: Context, config: Config): void {
+  // A `volatile()` schema field resolves to a reference, not a value: DSH 0.2.0
+  // models the settings-owned fields that way so the runtime can hand out a new
+  // snapshot without re-parsing the config. Unwrap the three of them once here,
+  // so the rest of this file deals in plain data. Later edits arrive through
+  // `reconcileSection`, never through `config`, so one unwrap per boot suffices.
+  const configToken = config.token?.get()
+  const configHostTokens = config.hostTokens?.get()
+  const configSkillSources: readonly SkillSource[] = config.skillSources?.get() ?? []
   // The credentials face is structural: the CredentialProvider contract's
   // resolve matches this subset, so the service stays optional.
   const credentials = ctx.get('credentials') as { resolve(ref: string): { value: string } | undefined } | undefined
@@ -315,14 +345,14 @@ export function apply(ctx: Context, config: Config): void {
   let settingsSection: GitlabSettings | undefined
   const resolveToken = (host: string | undefined): string | undefined => {
     const hostToken = host !== undefined && host !== '' ? settingsSection?.hostTokens?.[host] : undefined
-    return hostToken ?? settingsSection?.token ?? config.token ?? credentials?.resolve(config.tokenEnv ?? 'GITLAB_TOKEN')?.value ?? process.env[config.tokenEnv ?? 'GITLAB_TOKEN']
+    return hostToken ?? settingsSection?.token ?? configToken ?? credentials?.resolve(config.tokenEnv ?? 'GITLAB_TOKEN')?.value ?? process.env[config.tokenEnv ?? 'GITLAB_TOKEN']
   }
 
   // Skill sources are mutable: the settings section (edited through the Web
   // panel) overrides the plugin config, and a change re-registers the live
   // skill providers. Declared up front so the settings watcher, registered
   // before the skill section below, can reach them without a TDZ hit.
-  let skillSources: SkillSource[] = config.skillSources ?? []
+  let skillSources: SkillSource[] = [...configSkillSources]
   let resyncProviders: (() => void) | undefined
   const sourcesKey = (sources: SkillSource[]): string => JSON.stringify(
     [...sources].sort((a, b) => a.id.localeCompare(b.id)).map(source => [
@@ -335,7 +365,7 @@ export function apply(ctx: Context, config: Config): void {
   // "not configured": the plugin config's sources win until the settings
   // section actually lists one.
   const effectiveSkillSources = (settingsSources: SkillSource[] | undefined): SkillSource[] =>
-    settingsSources !== undefined && settingsSources.length > 0 ? settingsSources : (config.skillSources ?? [])
+    settingsSources !== undefined && settingsSources.length > 0 ? settingsSources : [...configSkillSources]
 
   const rowsByProject = new Map<string, ProjectRows>()
   const apisByProject = new Map<string, GitlabApi>()
@@ -652,7 +682,13 @@ export function apply(ctx: Context, config: Config): void {
     // Seed from the plugin config: 0.2.0 derives the settings namespace from
     // this entry's Config, so a persisted value (including a legacy
     // `settings.yaml` section the core imported) is already here.
-    reconcileSection({ token: config.token, hostTokens: config.hostTokens, skillSources: config.skillSources })
+    reconcileSection({
+      token: configToken,
+      // `get()` returns a deeply readonly snapshot; the local section it seeds
+      // is mutable, so copy the two structured fields out of it.
+      hostTokens: configHostTokens === undefined ? undefined : { ...configHostTokens },
+      skillSources: [...configSkillSources],
+    })
     const revisionOf = (): number | undefined =>
       settingsCtx.settings.describe({ redactSecrets: true }).find(candidate => candidate.ns === GITLAB_ENTRY_ID)?.revision
     /**
@@ -775,7 +811,7 @@ export function apply(ctx: Context, config: Config): void {
     const tokenEnv = source.tokenEnv ?? config.tokenEnv ?? 'GITLAB_TOKEN'
     return settingsSection?.hostTokens?.[host]
       ?? settingsSection?.token
-      ?? config.token
+      ?? configToken
       ?? credentials?.resolve(tokenEnv)?.value
       ?? process.env[tokenEnv]
   }
