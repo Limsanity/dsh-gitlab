@@ -9,6 +9,19 @@ DeepSeek Harness 的 Web UI 插件:在会话面板展示当前工作区对应 Gi
 - **Open MRs**:approve / merge / close 按钮,create MR(源/目标分支下拉可选,标题可填)
 - **Settings 面板 → GitLab 页**:默认 token + 按 host 的 token 管理,保存后热生效,无需重启
 - 轮询刷新(默认 30s);API 失败时**清空列表并显示错误横幅**——不保留旧数据
+- **MR 审查卡(会话页,只读)**:回答里出现合并请求链接时,该回合末尾出现卡片——提交按作者归属(你 / 他人 / 未知)、merge 提交、冲突状态、改动文件与 ± 行数;点开可按提交查看文件,点文件打开右侧 diff 面板(上一份/下一份、复制路径)
+- **当前分支 MR 细条**:输入框上方列出当前分支的 open MR,点一下进入同一审查面板,不离开会话
+
+### MR 审查卡片
+
+审查卡与面板不直接调用 GitLab 的写接口。「让 Agent 合入」是两步确认后向当前会话发送一条用户消息,由 agent 重新拉取并复核发布闸门后决定是否合入;approve / merge / close 按钮仍保留在 GitLab tab。
+
+- 数据实时来自 GitLab API,不是把 `git log` 结果抄进消息,所以 MR 更新后卡片会提示「自上次查看后 +N 提交」
+- 授权:`token` 需要 `read_api`;卡片按「会话工作区 → 检测到的 GitLab 项目」校验,链接指向别的项目时不会借用本工作区的 token
+- 只消费规范形式的 MR 链接(`https://<host>/<group>/<project>/-/merge_requests/<iid>`);自建实例若部署在子路径下,项目路径会带上前缀而无法匹配
+- GitLab 16.11(JH)的 `/merge_requests/:iid/diffs` 在大页时返回 500,插件会自动回退到 `/changes`;单页文件超过 300 个时只列前 300 个
+
+Host 路由(均在 loopback fence 内,受 Web 登录 cookie 保护):`GET /gitlab/session-mrs`、`GET /gitlab/mr`、`GET /gitlab/mr/commit`、`GET /gitlab/mr/file`、`GET /gitlab/branch-mrs`。
 
 ## 安装
 

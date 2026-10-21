@@ -11,6 +11,19 @@ A DeepSeek Harness Web UI plugin: shows the GitLab CI/CD pipelines and merge req
 - **Open MRs**: approve / merge / close buttons, and create-MR with source/target branch selectors and an optional title
 - **Settings panel → GitLab page**: a default token plus per-host tokens; edits take effect live, no restart
 - Poll-based refresh (default 30 s); on API failure the list is **cleared and an error banner is shown** — no stale data is kept
+- **Read-only MR review card** (conversation page): when an answer links a merge request, a card closes that turn with commit authorship (you / other / unknown), merge commits, conflicts, changed files and ± line counts; expand it to list one commit's files, and tap a file to open the right-hand diff pane (previous/next file, copy path)
+- **Current-branch MR dock**: the open MRs of the checkout's branch sit above the composer and open the same review pane without leaving the conversation
+
+### MR review
+
+The card and pane never call a GitLab write API. "Let the agent merge" only sends a chat message after a second confirmation; the agent re-fetches the release gates and decides. Approve / merge / close stay in the GitLab tab.
+
+- Evidence is fetched live from the GitLab API instead of being transcribed from `git log`, so after the MR moves the card reports "new commits since your last view"
+- Authorization: the token needs `read_api`; the routes resolve "session workspace → detected GitLab project", and a link to a different project never borrows this workspace's token
+- Only canonical MR links (`https://<host>/<group>/<project>/-/merge_requests/<iid>`) are consumed; a self-managed instance served under a sub-path yields a prefixed project path that will not match
+- GitLab 16.11 (JH) answers 500 for large `/merge_requests/:iid/diffs` pages; the plugin falls back to `/changes`, and lists at most the first 300 files
+
+Host routes (loopback-fenced, Web session cookie): `GET /gitlab/session-mrs`, `GET /gitlab/mr`, `GET /gitlab/mr/commit`, `GET /gitlab/mr/file`, `GET /gitlab/branch-mrs`.
 
 ## Installation
 

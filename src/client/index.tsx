@@ -25,12 +25,13 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 // settings surface (the section itself edits the token through this
 // plugin's own /gitlab/settings route, not the settings RPC).
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+import { installMrSurfaces } from './mr.jsx'
 
 /** Stable Cordis plugin name (client half). */
 export const name = 'dsh-gitlab'
 
 /** Client services required before the tab can mount. */
-export const inject = ['slots', 'sessions', 'workspaces']
+export const inject = ['slots', 'sessions', 'workspaces', 'sidebarRight', 'sidebarRightTabs']
 
 /** Poll cadence for the host status route. */
 const POLL_MS = 10_000
@@ -722,6 +723,13 @@ function GitlabSettingsPanel(): JSX.Element {
  * @param ctx - client context carrying the slot registry.
  */
 export function apply(ctx: Context): void {
+  // Message-page MR review: a turn-tail card, a current-branch dock and (when
+  // the sidebar services are mounted) the full review pane. All read-only.
+  installMrSurfaces(ctx as unknown as Record<string, unknown> & { slots: any }, {
+    sidebarRight: (ctx as unknown as { sidebarRight?: { openTab?: (kind: string, options?: { params?: unknown }) => void } }).sidebarRight,
+    sidebarRightTabs: (ctx as unknown as { sidebarRightTabs?: { register?: (definition: Record<string, unknown>) => (() => void) | void } }).sidebarRightTabs,
+  })
+
   ctx.slots.inject('conversation.view', () => ctx.slots.register({
     name: 'conversation.view',
     id: 'gitlab',

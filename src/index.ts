@@ -30,6 +30,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { gitClone, gitCommitPush, gitPull, refreshOriginToken } from './git.ts'
 import { GitlabApi, parseGitRemote, type GitlabRemote, type MrRow, type PipelineRow } from './gitlab.ts'
 import { isTrustedLocalRequest } from './fence.ts'
+import { registerMrRoutes } from './mr.ts'
 import { createLocalSkillProvider } from './skill.ts'
 import { GitlabHostTokensSchema, GitlabSkillSourceSchema, type GitlabSettings, type GitlabSkillSource } from './settings.ts'
 
@@ -662,6 +663,19 @@ export function apply(ctx: Context, config: Config): void {
     void promise.then(() => { ensuring.delete(workspaceId) }, () => { ensuring.delete(workspaceId) })
     return promise
   }
+
+  // Read-only MR review routes. They reuse `ensure` so an MR detail request
+  // shares the workspace's poller, API client and token with the status tab;
+  // the caller names a session directory (or a tracked workspace) and the
+  // project must equal that workspace's detected project.
+  registerMrRoutes({
+    ctx,
+    config,
+    ensureWorkspace: workspaceId => ensure(workspaceId),
+    projectForWorkspace: workspaceId => projectByWorkspace.get(workspaceId) ?? null,
+    workspaceFor: workspaceId => resolveWorkspace(workspaceId),
+    apiForProject: project => apisByProject.get(project),
+  })
 
   // ── settings namespace ────────────────────────────────────────────────────
   // The `gitlab` namespace holds the user-editable token. The Web settings

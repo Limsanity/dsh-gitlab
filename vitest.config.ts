@@ -12,7 +12,7 @@ import { defineConfig } from 'vitest/config'
 // failing loudly, hiding the two specs that cover real Loader composition.
 export default defineConfig({
   test: {
-    include: ['tests/**/*.spec.ts'],
+    include: ['tests/**/*.spec.ts', 'tests/**/*.spec.tsx'],
     pool: 'forks',
   },
 })

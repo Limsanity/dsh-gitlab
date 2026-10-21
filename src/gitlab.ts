@@ -80,6 +80,68 @@ export interface MrRow {
   webUrl: string | null
 }
 
+/** One merge request's reviewable detail row. */
+export interface MrDetailRow {
+  iid: number
+  title: string
+  state: string
+  webUrl: string | null
+  sourceBranch: string
+  targetBranch: string
+  author: { name: string | null; username: string | null }
+  hasConflicts: boolean
+  /** GitLab 15.6+ mergeability verdict; null on older instances. */
+  detailedMergeStatus: string | null
+  /** Legacy verdict kept for instances without `detailed_merge_status`. */
+  mergeStatus: string | null
+  /** `changes_count` is a string: the API may answer `"1000+"` when truncated. */
+  changesCount: string | null
+  sha: string | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+/** One commit of a merge request. */
+export interface MrCommitRow {
+  id: string
+  shortId: string
+  title: string
+  authorName: string | null
+  authorEmail: string | null
+  authoredDate: string | null
+  /** More than one parent marks a merge commit, which the release gate rejects. */
+  parentCount: number
+  /**
+   * Whether this looks like a merge commit. GitLab 16.11 returns an empty
+   * `parent_ids` for MR commits, so the conventional merge title is the
+   * remaining signal; a real multi-parent commit always sets it too.
+   */
+  mergeSuspect: boolean
+  webUrl: string | null
+}
+
+/** One changed file of a merge request or one commit. */
+export interface MrDiffRow {
+  path: string
+  oldPath: string | null
+  newFile: boolean
+  deletedFile: boolean
+  renamedFile: boolean
+  /** Unified patch; null when the API omitted it (binary, generated or oversized). */
+  patch: string | null
+}
+
+/** A GitLab REST failure carrying the HTTP status the routes translate. */
+export class GitlabHttpError extends Error {
+  readonly status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'GitlabHttpError'
+    this.status = status
+  }
+}
+
 /** One project row in a group listing, reduced to what skill discovery needs. */
 export interface GroupProjectRow {
   /** Project basename, e.g. `skill-foo`. */
@@ -145,7 +207,7 @@ export class GitlabApi {
       headers,
       signal: AbortSignal.timeout(this.timeoutMs),
     })
-    if (!res.ok) throw new Error(`GitLab API ${String(res.status)} for ${path}`)
+    if (!res.ok) throw new GitlabHttpError(res.status, `GitLab API ${String(res.status)} for ${path}`)
     if (res.status === 204) return undefined as T
     const text = await res.text()
     // Some GitLab write endpoints answer an empty 200; an empty body is a
@@ -261,5 +323,139 @@ export class GitlabApi {
   /** Merge one MR. */
   async mergeMr(project: string, iid: number): Promise<void> {
     await this.request<unknown>(`/projects/${encodeURIComponent(project)}/merge_requests/${String(iid)}/merge`, { method: 'PUT' })
+  }
+
+  /** One merge request's review metadata. */
+  async getMr(project: string, iid: number): Promise<MrDetailRow> {
+    const data = await this.request<{
+      iid: number
+      title: string
+      state: string
+      web_url: string | null
+      source_branch: string
+      target_branch: string
+      author: { name?: string | null; username?: string | null } | null
+      has_conflicts?: boolean | null
+      detailed_merge_status?: string | null
+      merge_status?: string | null
+      changes_count?: string | number | null
+      sha?: string | null
+      created_at?: string | null
+      updated_at?: string | null
+    }>(`/projects/${encodeURIComponent(project)}/merge_requests/${String(iid)}`)
+    return {
+      iid: data.iid,
+      title: data.title,
+      state: data.state,
+      webUrl: data.web_url,
+      sourceBranch: data.source_branch,
+      targetBranch: data.target_branch,
+      author: { name: data.author?.name ?? null, username: data.author?.username ?? null },
+      hasConflicts: data.has_conflicts === true,
+      detailedMergeStatus: data.detailed_merge_status ?? null,
+      mergeStatus: data.merge_status ?? null,
+      changesCount: data.changes_count === undefined || data.changes_count === null ? null : String(data.changes_count),
+      sha: data.sha ?? null,
+      createdAt: data.created_at ?? null,
+      updatedAt: data.updated_at ?? null,
+    }
+  }
+
+  /** A merge request's commits, oldest first as GitLab returns them. */
+  async listMrCommits(project: string, iid: number, perPage = 100): Promise<{ commits: MrCommitRow[]; hasMore: boolean }> {
+    const data = await this.request<Array<{
+      id: string
+      short_id?: string | null
+      title: string
+      author_name?: string | null
+      author_email?: string | null
+      authored_date?: string | null
+      parent_ids?: string[] | null
+      web_url?: string | null
+    }>>(`/projects/${encodeURIComponent(project)}/merge_requests/${String(iid)}/commits?${new URLSearchParams({ per_page: String(perPage) })}`)
+    return {
+      commits: data.map(item => {
+        const parentCount = Array.isArray(item.parent_ids) ? item.parent_ids.length : 0
+        return {
+          id: item.id,
+          shortId: item.short_id ?? item.id.slice(0, 8),
+          title: item.title,
+          authorName: item.author_name ?? null,
+          authorEmail: item.author_email ?? null,
+          authoredDate: item.authored_date ?? null,
+          parentCount,
+          mergeSuspect: parentCount > 1 || /^Merge (?:branch|remote-tracking branch|pull request|tag|commit)\b/i.test(item.title),
+          webUrl: item.web_url ?? null,
+        }
+      }),
+      hasMore: data.length >= perPage,
+    }
+  }
+
+  /**
+   * A merge request's changed files, one page at a time.
+   *
+   * GitLab 15.7+ serves `/diffs` with pagination; older instances answer 404
+   * and only expose the single-response `/changes` endpoint. Both carry the
+   * unified patch, so callers get the same shape either way.
+   */
+  async listMrDiffs(project: string, iid: number, page = 1, perPage = 100): Promise<{ diffs: MrDiffRow[]; hasMore: boolean; overflow: boolean }> {
+    const base = `/projects/${encodeURIComponent(project)}/merge_requests/${String(iid)}`
+    try {
+      const data = await this.request<RawDiff[]>(`${base}/diffs?${new URLSearchParams({ page: String(page), per_page: String(perPage) })}`)
+      return { diffs: data.map(mapDiff), hasMore: data.length >= perPage, overflow: false }
+    } catch (error) {
+      if (!isDiffsDowngrade(error)) throw error
+      try {
+        // GitLab (notably the 16.11 JH line) answers 500 when one page's diff
+        // payload is too large; the single-response endpoint still works and
+        // is the reliable fallback there.
+        const data = await this.request<{ changes?: RawDiff[]; overflow?: boolean }>(`${base}/changes`)
+        const rows = (data.changes ?? []).map(mapDiff)
+        return { diffs: rows.slice(0, 300), hasMore: rows.length > 300, overflow: data.overflow === true }
+      } catch (fallbackError) {
+        if (!isDiffsDowngrade(fallbackError)) throw fallbackError
+        // Last resort: a page small enough for the instance's byte budget.
+        const data = await this.request<RawDiff[]>(`${base}/diffs?${new URLSearchParams({ page: '1', per_page: '30' })}`)
+        return { diffs: data.map(mapDiff), hasMore: data.length >= 30, overflow: false }
+      }
+    }
+  }
+
+  /** The files one commit touched, without their patches. */
+  async listCommitDiffs(project: string, sha: string): Promise<MrDiffRow[]> {
+    const data = await this.request<RawDiff[]>(
+      `/projects/${encodeURIComponent(project)}/repository/commits/${encodeURIComponent(sha)}/diff`,
+    )
+    return data.map(mapDiff)
+  }
+}
+
+/** One raw GitLab diff entry shared by the MR and commit endpoints. */
+interface RawDiff {
+  old_path?: string
+  new_path?: string
+  new_file?: boolean
+  deleted_file?: boolean
+  renamed_file?: boolean
+  diff?: string
+}
+
+/** Statuses that mean "this page size/endpoint is unusable here", not "auth failed". */
+function isDiffsDowngrade(error: unknown): boolean {
+  return error instanceof GitlabHttpError && [404, 405, 500, 501, 502, 503].includes(error.status)
+}
+
+/** Project one raw diff entry without inventing a path the API did not report. */
+function mapDiff(raw: RawDiff): MrDiffRow {
+  const path = raw.new_path ?? raw.old_path ?? ''
+  const oldPath = raw.old_path === undefined || raw.old_path === path ? null : raw.old_path
+  return {
+    path,
+    oldPath,
+    newFile: raw.new_file === true,
+    deletedFile: raw.deleted_file === true,
+    renamedFile: raw.renamed_file === true,
+    patch: typeof raw.diff === 'string' ? raw.diff : null,
   }
 }
